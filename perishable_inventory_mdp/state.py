@@ -1,0 +1,310 @@
+"""
+State Variables for the Perishable Inventory MDP
+
+Implements the state representation X_t = (I_t, {P_t^(s)}_{s∈S}, B_t, z_t)
+as defined in the mathematical formulation.
+"""
+
+import numpy as np
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Tuple
+from copy import deepcopy
+
+
+@dataclass
+class SupplierPipeline:
+    """
+    Pipeline for a single supplier tracking incoming orders.
+    
+    P_t^(s) = (P_t^(s,1), ..., P_t^(s,L_s))
+    where P_t^(s,1) arrives at the start of period t.
+    
+    Attributes:
+        supplier_id: Identifier for this supplier
+        lead_time: Number of lead-time buckets L_s
+        pipeline: Array of quantities in transit, indexed by arrival time
+        scheduled: Non-decision based incoming supply (committed orders)
+        unit_cost: Per-unit purchase cost v_s
+        fixed_cost: Fixed ordering cost K_s
+        capacity: Maximum order size U_s
+        moq: Minimum order quantity M_s
+    """
+    supplier_id: int
+    lead_time: int
+    pipeline: np.ndarray = field(default_factory=lambda: np.array([]))
+    scheduled: np.ndarray = field(default_factory=lambda: np.array([]))
+    unit_cost: float = 1.0
+    fixed_cost: float = 0.0
+    capacity: float = float('inf')
+    moq: int = 1
+    
+    def __post_init__(self):
+        if len(self.pipeline) == 0:
+            self.pipeline = np.zeros(self.lead_time, dtype=np.float64)
+        if len(self.scheduled) == 0:
+            self.scheduled = np.zeros(self.lead_time, dtype=np.float64)
+    
+    def get_arriving(self) -> float:
+        """Get quantity arriving this period (P_t^(s,1) + P̃_t^(s,1))"""
+        return self.pipeline[0] + self.scheduled[0]
+    
+    def shift_and_add_order(self, order_qty: float) -> float:
+        """
+        Shift pipeline forward and add new order at the end.
+        Returns the quantity that arrived (was at position 0).
+        
+        Pipeline evolution:
+        P_{t+1}^(s,ℓ) = P_t^(s,ℓ+1) for ℓ < L_s
+        P_{t+1}^(s,L_s) = a_t^(s)
+        """
+        arrived = self.pipeline[0]
+        self.pipeline = np.roll(self.pipeline, -1)
+        self.pipeline[-1] = order_qty
+        return arrived
+    
+    def shift_scheduled(self) -> float:
+        """
+        Shift scheduled supply forward.
+        
+        P̃_{t+1}^(s,ℓ) = P̃_t^(s,ℓ+1)
+        P̃_{t+1}^(s,L_s) = 0
+        """
+        arrived = self.scheduled[0]
+        self.scheduled = np.roll(self.scheduled, -1)
+        self.scheduled[-1] = 0
+        return arrived
+    
+    def total_in_pipeline(self) -> float:
+        """Total quantity in transit"""
+        return np.sum(self.pipeline) + np.sum(self.scheduled)
+    
+    def copy(self) -> 'SupplierPipeline':
+        """Create a deep copy of this pipeline"""
+        return SupplierPipeline(
+            supplier_id=self.supplier_id,
+            lead_time=self.lead_time,
+            pipeline=self.pipeline.copy(),
+            scheduled=self.scheduled.copy(),
+            unit_cost=self.unit_cost,
+            fixed_cost=self.fixed_cost,
+            capacity=self.capacity,
+            moq=self.moq
+        )
+
+
+@dataclass
+class InventoryState:
+    """
+    Complete state representation for the Perishable Inventory MDP.
+    
+    X_t = (I_t, {P_t^(s)}_{s∈S}, B_t, z_t)
+    
+    Attributes:
+        inventory: On-hand inventory by expiry buckets I_t = (I_t^(1), ..., I_t^(N))
+                   where I_t^(1) expires soonest, I_t^(N) is freshest
+        shelf_life: Number of expiry buckets N
+        pipelines: Dictionary of supplier pipelines {s: P_t^(s)}
+        backorders: Unfulfilled demand B_t
+        exogenous_state: External state z_t (seasonality, trends, etc.)
+        time_step: Current time period t
+    """
+    shelf_life: int
+    inventory: np.ndarray = field(default_factory=lambda: np.array([]))
+    pipelines: Dict[int, SupplierPipeline] = field(default_factory=dict)
+    backorders: float = 0.0
+    exogenous_state: Optional[np.ndarray] = None
+    time_step: int = 0
+    
+    def __post_init__(self):
+        if len(self.inventory) == 0:
+            self.inventory = np.zeros(self.shelf_life, dtype=np.float64)
+        elif len(self.inventory) != self.shelf_life:
+            raise ValueError(f"Inventory length {len(self.inventory)} != shelf_life {self.shelf_life}")
+    
+    @property
+    def total_inventory(self) -> float:
+        """Total on-hand inventory across all expiry buckets"""
+        return np.sum(self.inventory)
+    
+    @property
+    def total_pipeline(self) -> float:
+        """Total inventory in all supplier pipelines"""
+        return sum(p.total_in_pipeline() for p in self.pipelines.values())
+    
+    @property
+    def inventory_position(self) -> float:
+        """
+        Inventory position: on-hand + pipeline - backorders
+        """
+        return self.total_inventory + self.total_pipeline - self.backorders
+    
+    def survival_adjusted_inventory_position(self, survival_probs: np.ndarray) -> float:
+        """
+        Survival-adjusted inventory position IP_t^surv.
+        
+        Accounts for probability that inventory will be consumed before expiry.
+        
+        Args:
+            survival_probs: Array ρ_n of survival probabilities for each bucket
+        
+        Returns:
+            IP_t^surv = Σ_n ρ_n * I_t^(n)
+        """
+        if len(survival_probs) != self.shelf_life:
+            raise ValueError("Survival probabilities must match shelf life")
+        return np.dot(survival_probs, self.inventory)
+    
+    def get_arriving_inventory(self) -> float:
+        """
+        Get total inventory arriving this period from all pipelines.
+        
+        A_t = Σ_{s∈S} (P_t^(s,1) + P̃_t^(s,1))
+        """
+        return sum(p.get_arriving() for p in self.pipelines.values())
+    
+    def add_arrivals(self, arrivals: float) -> None:
+        """
+        Add arriving inventory to freshest bucket.
+        
+        I_t^(N) ← I_t^(N) + A_t
+        """
+        self.inventory[-1] += arrivals
+    
+    def serve_demand_fifo(self, demand: float) -> Tuple[float, float]:
+        """
+        Serve demand using FIFO (oldest first) policy.
+        
+        For n=1,...,N:
+            take_n = min(I_t^(n), R)
+            I_t^(n) ← I_t^(n) - take_n
+            R ← R - take_n
+        
+        Args:
+            demand: Total demand D_t to fulfill
+        
+        Returns:
+            Tuple of (sales x_t, new_backorders B_t^new)
+        """
+        remaining = demand
+        for n in range(self.shelf_life):
+            take = min(self.inventory[n], remaining)
+            self.inventory[n] -= take
+            remaining -= take
+            if remaining <= 0:
+                break
+        
+        sales = demand - remaining
+        new_backorders = max(remaining, 0)
+        return sales, new_backorders
+    
+    def age_inventory(self) -> float:
+        """
+        Age inventory by one period and return spoiled quantity.
+        
+        Spoiled_t = I_t^(1)
+        I_{t+1}^(n) = I_t^(n+1) for n=1,...,N-1
+        I_{t+1}^(N) = 0
+        
+        Returns:
+            Quantity of spoiled inventory
+        """
+        spoiled = self.inventory[0]
+        self.inventory = np.roll(self.inventory, -1)
+        self.inventory[-1] = 0
+        return spoiled
+    
+    def get_aging_matrix(self) -> np.ndarray:
+        """
+        Get the aging shift matrix A_age for vectorized operations.
+        
+        A_age is an NxN matrix where:
+        A_age[i,i+1] = 1 for i = 0,...,N-2
+        All other entries are 0
+        
+        Then: I_{t+1}^aged = A_age @ I_t
+        """
+        N = self.shelf_life
+        A_age = np.zeros((N, N), dtype=np.float64)
+        for i in range(N - 1):
+            A_age[i, i + 1] = 1
+        return A_age
+    
+    def copy(self) -> 'InventoryState':
+        """Create a deep copy of this state"""
+        return InventoryState(
+            shelf_life=self.shelf_life,
+            inventory=self.inventory.copy(),
+            pipelines={s: p.copy() for s, p in self.pipelines.items()},
+            backorders=self.backorders,
+            exogenous_state=self.exogenous_state.copy() if self.exogenous_state is not None else None,
+            time_step=self.time_step
+        )
+    
+    def to_tuple(self) -> tuple:
+        """Convert state to hashable tuple for use as dictionary key"""
+        inv_tuple = tuple(self.inventory.round(2))
+        pipeline_tuples = tuple(
+            (s, tuple(p.pipeline.round(2)), tuple(p.scheduled.round(2)))
+            for s, p in sorted(self.pipelines.items())
+        )
+        exog = tuple(self.exogenous_state.round(2)) if self.exogenous_state is not None else ()
+        return (inv_tuple, pipeline_tuples, round(self.backorders, 2), exog)
+    
+    def __hash__(self):
+        return hash(self.to_tuple())
+    
+    def __eq__(self, other):
+        if not isinstance(other, InventoryState):
+            return False
+        return self.to_tuple() == other.to_tuple()
+
+
+def create_state_from_config(
+    shelf_life: int,
+    suppliers: List[Dict],
+    initial_inventory: Optional[np.ndarray] = None,
+    initial_backorders: float = 0.0,
+    initial_exogenous: Optional[np.ndarray] = None
+) -> InventoryState:
+    """
+    Factory function to create an InventoryState from configuration.
+    
+    Args:
+        shelf_life: Number of expiry buckets N
+        suppliers: List of supplier configurations, each containing:
+            - id: Supplier identifier
+            - lead_time: Lead time L_s
+            - unit_cost: Per-unit cost v_s
+            - fixed_cost: Fixed ordering cost K_s (optional)
+            - capacity: Maximum order U_s (optional)
+            - moq: Minimum order quantity M_s (optional)
+            - initial_pipeline: Initial pipeline quantities (optional)
+        initial_inventory: Initial inventory by expiry bucket
+        initial_backorders: Initial backorder level
+        initial_exogenous: Initial exogenous state
+    
+    Returns:
+        Configured InventoryState
+    """
+    state = InventoryState(
+        shelf_life=shelf_life,
+        inventory=initial_inventory if initial_inventory is not None else np.zeros(shelf_life),
+        backorders=initial_backorders,
+        exogenous_state=initial_exogenous
+    )
+    
+    for supplier in suppliers:
+        pipeline = SupplierPipeline(
+            supplier_id=supplier['id'],
+            lead_time=supplier['lead_time'],
+            unit_cost=supplier.get('unit_cost', 1.0),
+            fixed_cost=supplier.get('fixed_cost', 0.0),
+            capacity=supplier.get('capacity', float('inf')),
+            moq=supplier.get('moq', 1)
+        )
+        if 'initial_pipeline' in supplier:
+            pipeline.pipeline = np.array(supplier['initial_pipeline'], dtype=np.float64)
+        state.pipelines[supplier['id']] = pipeline
+    
+    return state
+
