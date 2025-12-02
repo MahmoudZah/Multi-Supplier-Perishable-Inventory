@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Optional, Callable, Tuple
 from scipy import stats
 
+from .exceptions import InvalidParameterError, InvalidDemandError
+
 
 class DemandProcess(ABC):
     """
@@ -87,6 +89,8 @@ class PoissonDemand(DemandProcess):
         base_rate: float,
         seasonality_fn: Optional[Callable[[np.ndarray], float]] = None
     ):
+        if base_rate < 0:
+            raise InvalidDemandError(f"Base rate must be non-negative, got {base_rate}")
         self.base_rate = base_rate
         self.seasonality_fn = seasonality_fn
     
@@ -109,6 +113,11 @@ class PoissonDemand(DemandProcess):
     def pmf(self, d: int, exogenous_state: Optional[np.ndarray] = None) -> float:
         rate = self._get_rate(exogenous_state)
         return stats.poisson.pmf(d, rate)
+    
+    def cdf(self, d: int, exogenous_state: Optional[np.ndarray] = None) -> float:
+        """Efficient CDF using scipy"""
+        rate = self._get_rate(exogenous_state)
+        return stats.poisson.cdf(d, rate)
 
 
 class NegativeBinomialDemand(DemandProcess):
@@ -130,6 +139,10 @@ class NegativeBinomialDemand(DemandProcess):
         prob_success: float = 0.5,
         prob_fn: Optional[Callable[[np.ndarray], float]] = None
     ):
+        if n_successes <= 0:
+            raise InvalidDemandError(f"Number of successes must be positive, got {n_successes}")
+        if not (0 < prob_success < 1):
+            raise InvalidDemandError(f"Probability must be in (0, 1), got {prob_success}")
         self.n_successes = n_successes
         self.base_prob = prob_success
         self.prob_fn = prob_fn
@@ -155,6 +168,11 @@ class NegativeBinomialDemand(DemandProcess):
     def pmf(self, d: int, exogenous_state: Optional[np.ndarray] = None) -> float:
         p = self._get_prob(exogenous_state)
         return stats.nbinom.pmf(d, self.n_successes, p)
+    
+    def cdf(self, d: int, exogenous_state: Optional[np.ndarray] = None) -> float:
+        """Efficient CDF using scipy"""
+        p = self._get_prob(exogenous_state)
+        return stats.nbinom.cdf(d, self.n_successes, p)
 
 
 class SeasonalDemand(DemandProcess):
@@ -173,6 +191,12 @@ class SeasonalDemand(DemandProcess):
         period: int = 12,
         phase: float = 0.0
     ):
+        if base_rate < 0:
+            raise InvalidDemandError(f"Base rate must be non-negative, got {base_rate}")
+        if amplitude < 0 or amplitude >= 1:
+            raise InvalidDemandError(f"Amplitude must be in [0, 1), got {amplitude}")
+        if period <= 0:
+            raise InvalidDemandError(f"Period must be positive, got {period}")
         self.base_rate = base_rate
         self.amplitude = amplitude
         self.period = period
@@ -201,6 +225,11 @@ class SeasonalDemand(DemandProcess):
     def pmf(self, d: int, exogenous_state: Optional[np.ndarray] = None) -> float:
         rate = self._get_rate(exogenous_state)
         return stats.poisson.pmf(d, max(0, rate))
+    
+    def cdf(self, d: int, exogenous_state: Optional[np.ndarray] = None) -> float:
+        """Efficient CDF using scipy"""
+        rate = self._get_rate(exogenous_state)
+        return stats.poisson.cdf(d, max(0, rate))
     
     def update_exogenous_state(
         self,

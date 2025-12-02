@@ -15,9 +15,11 @@ from typing import Dict, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .state import InventoryState
     from .environment import PerishableInventoryMDP
+from .interfaces import InventoryAgent, InventoryEnvironment
+from .exceptions import InvalidParameterError, SupplierNotFoundError
 
 
-class BasePolicy(ABC):
+class BasePolicy(InventoryAgent):
     """
     Abstract base class for ordering policies.
     
@@ -42,6 +44,14 @@ class BasePolicy(ABC):
         """
         pass
     
+    def act(
+        self,
+        state: 'InventoryState',
+        env: 'InventoryEnvironment'
+    ) -> Dict[int, float]:
+        """Alias for get_action to satisfy InventoryAgent interface"""
+        return self.get_action(state, env)  # type: ignore
+
     def __call__(
         self,
         state: 'InventoryState',
@@ -100,6 +110,8 @@ class BaseStockPolicy(BasePolicy):
         supplier_id: int = 0,
         respect_moq: bool = True
     ):
+        if target_level < 0:
+            raise InvalidParameterError(f"Target level must be non-negative, got {target_level}")
         self.target_level = target_level
         self.supplier_id = supplier_id
         self.respect_moq = respect_moq
@@ -113,18 +125,37 @@ class BaseStockPolicy(BasePolicy):
         inventory_position = state.inventory_position
         order_qty = max(0, self.target_level - inventory_position)
         
-        # Respect MOQ if configured
-        if self.respect_moq and self.supplier_id in state.pipelines:
-            moq = state.pipelines[self.supplier_id].moq
-            if order_qty > 0 and order_qty < moq:
-                order_qty = moq
-            elif order_qty > 0:
-                order_qty = np.ceil(order_qty / moq) * moq
-        
-        # Respect capacity
+        # Respect capacity first
         if self.supplier_id in state.pipelines:
             capacity = state.pipelines[self.supplier_id].capacity
             order_qty = min(order_qty, capacity)
+        
+        # Then apply MOQ rounding
+        if self.respect_moq and self.supplier_id in state.pipelines:
+            moq = state.pipelines[self.supplier_id].moq
+            if order_qty > 0 and order_qty < moq:
+                # If order is positive but less than MOQ, round up to MOQ
+                order_qty = moq
+                # Re-check capacity after rounding up
+                if self.supplier_id in state.pipelines:
+                    capacity = state.pipelines[self.supplier_id].capacity
+                    if order_qty > capacity:
+                        # Can't meet MOQ given capacity - order 0
+                        order_qty = 0.0
+            elif order_qty > 0:
+                # Round up to nearest MOQ multiple
+                order_qty = float(np.ceil(order_qty / moq) * moq)
+                # Re-check capacity after rounding
+                if self.supplier_id in state.pipelines:
+                    capacity = state.pipelines[self.supplier_id].capacity
+                    if order_qty > capacity:
+                        # Round down to largest MOQ multiple that fits
+                        order_qty = float(np.floor(capacity / moq) * moq)
+        
+        # Validate supplier exists
+        if self.supplier_id not in state.pipelines:
+            available = list(state.pipelines.keys())
+            raise SupplierNotFoundError(self.supplier_id, available)
         
         # Return action for all suppliers (0 for non-target suppliers)
         action = {s: 0.0 for s in state.pipelines.keys()}
@@ -146,6 +177,8 @@ class MultiSupplierBaseStockPolicy(BasePolicy):
         target_level: float,
         allocation_strategy: str = "cheapest_first"
     ):
+        if target_level < 0:
+            raise InvalidParameterError(f"Target level must be non-negative, got {target_level}")
         self.target_level = target_level
         self.allocation_strategy = allocation_strategy
     
@@ -221,6 +254,14 @@ class TailoredBaseSurgePolicy(BasePolicy):
         state: 'InventoryState',
         mdp: 'PerishableInventoryMDP'
     ) -> Dict[int, float]:
+        # Validate suppliers exist
+        if self.slow_supplier_id not in state.pipelines:
+            available = list(state.pipelines.keys())
+            raise SupplierNotFoundError(self.slow_supplier_id, available)
+        if self.fast_supplier_id not in state.pipelines:
+            available = list(state.pipelines.keys())
+            raise SupplierNotFoundError(self.fast_supplier_id, available)
+        
         action = {s: 0.0 for s in state.pipelines.keys()}
         
         # Calculate relevant positions

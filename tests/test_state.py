@@ -15,6 +15,7 @@ sys.path.insert(0, '.')
 from perishable_inventory_mdp.state import (
     InventoryState, SupplierPipeline, create_state_from_config
 )
+from perishable_inventory_mdp.exceptions import InvalidParameterError
 
 
 class TestSupplierPipeline:
@@ -140,7 +141,7 @@ class TestInventoryState:
     
     def test_invalid_inventory_length(self):
         """Test that mismatched inventory length raises error"""
-        with pytest.raises(ValueError):
+        with pytest.raises(InvalidParameterError):
             InventoryState(shelf_life=5, inventory=np.array([1, 2, 3]))
     
     def test_total_inventory(self):

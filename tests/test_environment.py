@@ -15,6 +15,7 @@ sys.path.insert(0, '.')
 from perishable_inventory_mdp.environment import (
     PerishableInventoryMDP, TransitionResult, create_simple_mdp
 )
+from perishable_inventory_mdp.simulation import run_episode
 from perishable_inventory_mdp.state import InventoryState, SupplierPipeline
 from perishable_inventory_mdp.demand import PoissonDemand
 from perishable_inventory_mdp.costs import CostParameters
@@ -212,8 +213,8 @@ class TestMDPSimulation:
         )
         
         policy = DoNothingPolicy()
-        results, total_reward = mdp.simulate_episode(
-            initial_state, policy, num_periods=10, seed=42
+        results, total_reward = run_episode(
+            mdp, policy, num_periods=10, seed=42, initial_state=initial_state
         )
         
         assert len(results) == 10
@@ -225,8 +226,8 @@ class TestMDPSimulation:
         
         # Order 10 units each period
         policy = ConstantOrderPolicy({0: 10.0})
-        results, _ = mdp.simulate_episode(
-            initial_state, policy, num_periods=20, seed=42
+        results, _ = run_episode(
+            mdp, policy, num_periods=20, seed=42, initial_state=initial_state
         )
         
         # Inventory should build up over time (with lead time)
@@ -240,8 +241,8 @@ class TestMDPSimulation:
         )
         
         policy = DoNothingPolicy()
-        results, _ = mdp.simulate_episode(
-            initial_state, policy, num_periods=50, seed=42
+        results, _ = run_episode(
+            mdp, policy, num_periods=50, seed=42, initial_state=initial_state
         )
         
         metrics = mdp.compute_inventory_metrics(results)
@@ -361,7 +362,7 @@ class TestSequenceOfEvents:
     
     def test_full_sequence(self):
         """Test complete sequence of events in one period"""
-        mdp = create_simple_mdp(shelf_life=4, num_suppliers=1, mean_demand=10.0)
+        mdp = create_simple_mdp(shelf_life=4, num_suppliers=1, mean_demand=10.0, fast_lead_time=2)
         
         # Set up specific state
         state = mdp.create_initial_state(

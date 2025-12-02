@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from copy import deepcopy
 
+from .exceptions import (
+    StateValidationError, NegativeInventoryError, InvalidParameterError
+)
+
+
 
 @dataclass
 class SupplierPipeline:
@@ -39,10 +44,42 @@ class SupplierPipeline:
     moq: int = 1
     
     def __post_init__(self):
-        if len(self.pipeline) == 0:
+        # Validation of parameters
+        if self.lead_time <= 0:
+            raise InvalidParameterError(f"Lead time must be positive, got {self.lead_time}")
+        if self.unit_cost < 0:
+            raise InvalidParameterError(f"Unit cost must be non-negative, got {self.unit_cost}")
+        if self.fixed_cost < 0:
+            raise InvalidParameterError(f"Fixed cost must be non-negative, got {self.fixed_cost}")
+        if self.capacity <= 0:
+            raise InvalidParameterError(f"Capacity must be positive, got {self.capacity}")
+        if self.moq <= 0:
+            raise InvalidParameterError(f"MOQ must be positive, got {self.moq}")
+        
+        # Initialize arrays if empty
+        init_pipeline = len(self.pipeline) == 0
+        init_scheduled = len(self.scheduled) == 0
+        
+        if init_pipeline:
             self.pipeline = np.zeros(self.lead_time, dtype=np.float64)
-        if len(self.scheduled) == 0:
+        if init_scheduled:
             self.scheduled = np.zeros(self.lead_time, dtype=np.float64)
+        
+        # Validate array lengths only if they were provided (not initialized)
+        if not init_pipeline and len(self.pipeline) != self.lead_time:
+            raise InvalidParameterError(
+                f"Pipeline length {len(self.pipeline)} != lead_time {self.lead_time}"
+            )
+        if not init_scheduled and len(self.scheduled) != self.lead_time:
+            raise InvalidParameterError(
+                f"Scheduled length {len(self.scheduled)} != lead_time {self.lead_time}"
+            )
+        
+        # Check for negative values
+        if np.any(self.pipeline < 0):
+            raise NegativeInventoryError("Pipeline contains negative values")
+        if np.any(self.scheduled < 0):
+            raise NegativeInventoryError("Scheduled contains negative values")
     
     def get_arriving(self) -> float:
         """Get quantity arriving this period (P_t^(s,1) + P̃_t^(s,1))"""
@@ -57,6 +94,9 @@ class SupplierPipeline:
         P_{t+1}^(s,ℓ) = P_t^(s,ℓ+1) for ℓ < L_s
         P_{t+1}^(s,L_s) = a_t^(s)
         """
+        if order_qty < 0:
+            raise InvalidParameterError(f"Order quantity must be non-negative, got {order_qty}")
+        
         arrived = self.pipeline[0]
         self.pipeline = np.roll(self.pipeline, -1)
         self.pipeline[-1] = order_qty
@@ -116,10 +156,29 @@ class InventoryState:
     time_step: int = 0
     
     def __post_init__(self):
+        # Validate shelf life
+        if self.shelf_life <= 0:
+            raise InvalidParameterError(f"Shelf life must be positive, got {self.shelf_life}")
+        
+        # Validate backorders
+        if self.backorders < 0:
+            raise InvalidParameterError(f"Backorders cannot be negative, got {self.backorders}")
+        
+        # Initialize or validate inventory
         if len(self.inventory) == 0:
             self.inventory = np.zeros(self.shelf_life, dtype=np.float64)
         elif len(self.inventory) != self.shelf_life:
-            raise ValueError(f"Inventory length {len(self.inventory)} != shelf_life {self.shelf_life}")
+            raise InvalidParameterError(
+                f"Inventory length {len(self.inventory)} != shelf_life {self.shelf_life}"
+            )
+        
+        # Check for negative inventory
+        if np.any(self.inventory < 0):
+            neg_idx = np.where(self.inventory < 0)[0]
+            raise NegativeInventoryError(
+                bucket_idx=int(neg_idx[0]), 
+                value=float(self.inventory[neg_idx[0]])
+            )
     
     @property
     def total_inventory(self) -> float:
@@ -168,6 +227,8 @@ class InventoryState:
         
         I_t^(N) ← I_t^(N) + A_t
         """
+        if arrivals < 0:
+            raise InvalidParameterError(f"Arrivals must be non-negative, got {arrivals}")
         self.inventory[-1] += arrivals
     
     def serve_demand_fifo(self, demand: float) -> Tuple[float, float]:
@@ -185,6 +246,9 @@ class InventoryState:
         Returns:
             Tuple of (sales x_t, new_backorders B_t^new)
         """
+        if demand < 0:
+            raise InvalidParameterError(f"Demand must be non-negative, got {demand}")
+        
         remaining = demand
         for n in range(self.shelf_life):
             take = min(self.inventory[n], remaining)

@@ -15,6 +15,7 @@ sys.path.insert(0, '.')
 
 from perishable_inventory_mdp.state import InventoryState, create_state_from_config
 from perishable_inventory_mdp.environment import PerishableInventoryMDP, create_simple_mdp
+from perishable_inventory_mdp.simulation import run_episode
 from perishable_inventory_mdp.demand import PoissonDemand, SeasonalDemand
 from perishable_inventory_mdp.costs import CostParameters
 from perishable_inventory_mdp.policies import (
@@ -79,7 +80,7 @@ class TestMathematicalFormulationConsistency:
         5. Pipeline Shifts and New Orders
         6. Backorder Update
         """
-        mdp = create_simple_mdp(shelf_life=4, num_suppliers=1, mean_demand=10.0)
+        mdp = create_simple_mdp(shelf_life=4, num_suppliers=1, mean_demand=10.0, fast_lead_time=2)
         
         # Set up specific scenario
         state = mdp.create_initial_state(
@@ -322,7 +323,7 @@ class TestLongRunSimulation:
         )
         
         policy = BaseStockPolicy(target_level=60.0, supplier_id=0)
-        results, _ = mdp.simulate_episode(state, policy, num_periods=200, seed=42)
+        results, _ = run_episode(mdp, policy, num_periods=200, seed=42, initial_state=state)
         
         # Inventory should stabilize around target level
         late_inventories = [r.next_state.total_inventory for r in results[-50:]]
@@ -341,7 +342,7 @@ class TestLongRunSimulation:
         )
         
         policy = DoNothingPolicy()
-        results, _ = mdp.simulate_episode(state, policy, num_periods=50, seed=42)
+        results, _ = run_episode(mdp, policy, num_periods=50, seed=42, initial_state=state)
         
         # Should have stockouts
         metrics = mdp.compute_inventory_metrics(results)
@@ -358,7 +359,7 @@ class TestLongRunSimulation:
         )
         
         policy = BaseStockPolicy(target_level=50.0, supplier_id=0)
-        results, total_reward = mdp.simulate_episode(state, policy, num_periods=100, seed=42)
+        results, total_reward = run_episode(mdp, policy, num_periods=100, seed=42, initial_state=state)
         
         metrics = mdp.compute_inventory_metrics(results)
         
@@ -409,8 +410,8 @@ class TestSolverIntegration:
             initial_inventory=np.array([10.0, 10.0, 10.0])
         )
         
-        _, solved_reward = mdp.simulate_episode(test_state, solved_policy, 50, seed=42)
-        _, nothing_reward = mdp.simulate_episode(test_state.copy(), DoNothingPolicy(), 50, seed=42)
+        _, solved_reward = run_episode(mdp, solved_policy, 50, seed=42, initial_state=test_state)
+        _, nothing_reward = run_episode(mdp, DoNothingPolicy(), 50, seed=42, initial_state=test_state.copy())
         
         # Solved policy should be at least as good (or close)
         # Note: with limited iterations, may not always be better

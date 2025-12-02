@@ -18,6 +18,7 @@ from perishable_inventory_mdp import (
 )
 from perishable_inventory_mdp.environment import create_simple_mdp
 from perishable_inventory_mdp.policies import DoNothingPolicy, ConstantOrderPolicy
+from perishable_inventory_mdp.simulation import run_episode
 
 # Import plotting utilities
 try:
@@ -91,8 +92,8 @@ def run_policy_comparison():
     
     for name, policy in policies.items():
         state = mdp.create_initial_state(initial_inventory=initial_inventory.copy())
-        results, total_reward = mdp.simulate_episode(
-            state, policy, num_periods=num_periods, seed=seed
+        results, total_reward = run_episode(
+            mdp, policy, num_periods=num_periods, seed=seed, initial_state=state
         )
         metrics = mdp.compute_inventory_metrics(results)
         
@@ -185,7 +186,7 @@ def run_detailed_trace():
         ip_slow = state.total_inventory + state.pipelines[1].total_in_pipeline() - state.backorders
         ip_total = state.inventory_position
         
-        action = policy.get_action(state, mdp)
+        action = policy.act(state, mdp)
         result = mdp.step(state, action)
         
         # Format inventory as integers for cleaner display
@@ -281,7 +282,7 @@ def run_seasonal_demand():
     
     print("\nRunning 36-period simulation (3 seasonal cycles)...")
     
-    results, total_reward = mdp.simulate_episode(state, policy, num_periods=36, seed=42)
+    results, total_reward = run_episode(mdp, policy, num_periods=36, seed=42, initial_state=state)
     
     # Analyze by season
     demands_by_period = [r.demand_realized for r in results]
@@ -338,7 +339,7 @@ def run_cost_analysis():
         reorder_point=20.0
     )
     
-    results, _ = mdp.simulate_episode(state, policy, num_periods=100, seed=42)
+    results, _ = run_episode(mdp, policy, num_periods=100, seed=42, initial_state=state)
     
     # Aggregate costs
     total_purchase = sum(r.costs.purchase_cost for r in results)

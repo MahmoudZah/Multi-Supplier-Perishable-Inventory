@@ -23,6 +23,12 @@ from .costs import (
     calculate_shortage_cost, calculate_spoilage_cost,
     calculate_safety_violation_cost, calculate_safe_threshold
 )
+from .interfaces import InventoryEnvironment
+from .exceptions import (
+    ActionValidationError, SupplierNotFoundError,
+    CapacityViolationError, MOQViolationError, InvalidParameterError
+)
+
 
 
 @dataclass
@@ -47,7 +53,7 @@ class TransitionResult:
         return self.costs.reward
 
 
-class PerishableInventoryMDP:
+class PerishableInventoryMDP(InventoryEnvironment):
     """
     Complete MDP environment for perishable inventory management.
     
@@ -85,20 +91,53 @@ class PerishableInventoryMDP:
                 f"Holding costs length {len(cost_params.holding_costs)} != shelf_life {shelf_life}"
             )
     
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None
+    ) -> InventoryState:
+        """
+        Reset the environment to an initial state.
+        
+        Args:
+            seed: Random seed for reproducibility
+            options: Dictionary containing initial state configuration:
+                - initial_inventory
+                - initial_backorders
+                - initial_exogenous
+        
+        Returns:
+            Initial InventoryState
+        """
+        if seed is not None:
+            np.random.seed(seed)
+            
+        options = options or {}
+        
+        return create_state_from_config(
+            shelf_life=self.shelf_life,
+            suppliers=self.suppliers,
+            initial_inventory=options.get('initial_inventory'),
+            initial_backorders=options.get('initial_backorders', 0.0),
+            initial_exogenous=options.get('initial_exogenous')
+        )
+
     def create_initial_state(
         self,
         initial_inventory: Optional[np.ndarray] = None,
         initial_backorders: float = 0.0,
         initial_exogenous: Optional[np.ndarray] = None
     ) -> InventoryState:
-        """Create an initial state for the MDP"""
-        return create_state_from_config(
-            shelf_life=self.shelf_life,
-            suppliers=self.suppliers,
-            initial_inventory=initial_inventory,
-            initial_backorders=initial_backorders,
-            initial_exogenous=initial_exogenous
-        )
+        """
+        Create an initial state for the MDP.
+        
+        Deprecated: Use reset() instead.
+        """
+        return self.reset(options={
+            'initial_inventory': initial_inventory,
+            'initial_backorders': initial_backorders,
+            'initial_exogenous': initial_exogenous
+        })
     
     def get_feasible_actions(self, state: InventoryState) -> List[Dict[int, float]]:
         """
@@ -137,21 +176,54 @@ class PerishableInventoryMDP:
         return feasible
     
     def is_action_feasible(self, state: InventoryState, action: Dict[int, float]) -> bool:
-        """Check if an action is feasible given the current state"""
+        """
+        Check if an action is feasible given the current state.
+        
+        Returns True if feasible, False otherwise (does not raise exceptions).
+        For detailed validation with exceptions, use validate_action().
+        """
+        try:
+            self.validate_action(state, action)
+            return True
+        except ActionValidationError:
+            return False
+    
+    def validate_action(self, state: InventoryState, action: Dict[int, float]) -> None:
+        """
+        Validate an action and raise descriptive exceptions if invalid.
+        
+        Args:
+            state: Current inventory state
+            action: Action to validate
+        
+        Raises:
+            SupplierNotFoundError: If action references unknown supplier
+            CapacityViolationError: If order exceeds capacity
+            MOQViolationError: If order violates MOQ constraints
+            InvalidParameterError: If order quantity is negative
+        """
         for supplier_id, order_qty in action.items():
+            # Check supplier exists
             if supplier_id not in state.pipelines:
-                return False
+                available = list(state.pipelines.keys())
+                raise SupplierNotFoundError(supplier_id, available)
+            
             pipeline = state.pipelines[supplier_id]
+            
+            # Check for negative orders
+            if order_qty < 0:
+                raise InvalidParameterError(
+                    f"Order quantity must be non-negative for supplier {supplier_id}, got {order_qty}"
+                )
             
             # Check capacity
             if order_qty > pipeline.capacity:
-                return False
+                raise CapacityViolationError(supplier_id, order_qty, pipeline.capacity)
             
             # Check MOQ (must be 0 or multiple of MOQ)
             if order_qty > 0 and order_qty % pipeline.moq != 0:
-                return False
-        
-        return True
+                raise MOQViolationError(supplier_id, order_qty, pipeline.moq)
+
     
     def step(
         self,
@@ -178,6 +250,9 @@ class PerishableInventoryMDP:
         Returns:
             TransitionResult containing next state, costs, and diagnostics
         """
+        # Validate action before proceeding
+        self.validate_action(state, action)
+        
         # Create copy to avoid mutating original state
         next_state = state.copy()
         
@@ -282,44 +357,7 @@ class PerishableInventoryMDP:
             }
         )
     
-    def simulate_episode(
-        self,
-        initial_state: InventoryState,
-        policy: 'BasePolicy',
-        num_periods: int,
-        seed: Optional[int] = None
-    ) -> Tuple[List[TransitionResult], float]:
-        """
-        Simulate a full episode using a given policy.
-        
-        Args:
-            initial_state: Starting state
-            policy: Policy to follow
-            num_periods: Number of periods to simulate
-            seed: Random seed for reproducibility
-        
-        Returns:
-            Tuple of (list of TransitionResults, total discounted reward)
-        """
-        if seed is not None:
-            np.random.seed(seed)
-        
-        state = initial_state.copy()
-        results = []
-        total_reward = 0.0
-        discount = 1.0
-        
-        for t in range(num_periods):
-            action = policy.get_action(state, self)
-            result = self.step(state, action)
-            results.append(result)
-            
-            total_reward += discount * result.reward
-            discount *= self.cost_params.discount_factor
-            
-            state = result.next_state
-        
-        return results, total_reward
+    # simulate_episode removed. Use simulation.run_episode instead.
     
     def expected_cost(
         self,
