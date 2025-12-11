@@ -47,6 +47,7 @@ class ComplexityLevel(Enum):
     MODERATE = auto()     # Some complexity, TBS still competitive
     COMPLEX = auto()      # High complexity, RL should excel
     EXTREME = auto()      # Maximum complexity for stress testing
+    ULTRA = auto()        # 10+ suppliers, extreme volatility (200x complex)
 
 
 @dataclass
@@ -123,6 +124,87 @@ class EnvironmentConfig:
 
 
 @dataclass
+class MultiItemEnvironmentConfig:
+    """Configuration for a multi-item environment instance.
+    
+    Extends EnvironmentConfig with per-item parameters.
+    """
+    # Item parameters
+    num_items: int = 2
+    item_shelf_lives: Tuple[int, ...] = (5, 4)
+    item_demand_multipliers: Tuple[float, ...] = (1.0, 0.8)
+    item_names: Tuple[str, ...] = ("Item A", "Item B")
+    
+    # Base demand (scaled by multipliers)
+    mean_demand: float = 10.0
+    
+    # Supplier parameters
+    num_suppliers: int = 2
+    lead_times: Tuple[int, ...] = (1, 3)
+    unit_costs: Tuple[float, ...] = (2.0, 1.0)
+    capacities: Tuple[float, ...] = (100.0, 100.0)
+    supplier_item_coverage: Optional[Dict[int, List[int]]] = None  # None = all items
+    
+    # Demand complexity
+    demand_type: str = "stationary"
+    seasonality_amplitude: float = 0.0
+    spike_probability: float = 0.0
+    spike_multiplier: float = 1.0
+    
+    # Supply complexity
+    stochastic_lead_times: bool = False
+    lead_time_variance: float = 0.0
+    
+    # Crisis dynamics
+    enable_crisis: bool = False
+    crisis_probability: float = 0.0
+    
+    # Cost structure
+    holding_cost_base: float = 0.5
+    holding_cost_age_premium: float = 0.5
+    shortage_cost: float = 10.0
+    spoilage_cost: float = 5.0
+    
+    # Metadata
+    complexity: str = "multi_item"
+    env_id: str = ""
+    is_multi_item: bool = True
+    
+    def __post_init__(self):
+        if not self.env_id:
+            self.env_id = self._generate_id()
+    
+    def _generate_id(self) -> str:
+        """Generate unique ID from config hash."""
+        config_dict = {
+            'num_items': self.num_items,
+            'item_shelf_lives': self.item_shelf_lives,
+            'item_demand_multipliers': self.item_demand_multipliers,
+            'mean_demand': self.mean_demand,
+            'num_suppliers': self.num_suppliers,
+            'lead_times': self.lead_times,
+            'unit_costs': self.unit_costs,
+            'demand_type': self.demand_type,
+            'complexity': self.complexity
+        }
+        config_str = json.dumps(config_dict, sort_keys=True, default=str)
+        return "mi_" + hashlib.md5(config_str.encode()).hexdigest()[:10]
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'MultiItemEnvironmentConfig':
+        """Create from dictionary."""
+        for field_name in ['item_shelf_lives', 'item_demand_multipliers', 'item_names',
+                           'lead_times', 'unit_costs', 'capacities']:
+            if field_name in data and isinstance(data[field_name], list):
+                data[field_name] = tuple(data[field_name])
+        return cls(**data)
+
+
+@dataclass
 class EnvironmentSuite:
     """Suite of environments for RL benchmarking.
     
@@ -190,11 +272,16 @@ class EnvironmentSuite:
         return suite
 
 
-def build_environment_from_config(config: EnvironmentConfig) -> PerishableInventoryMDP:
+def build_environment_from_config(config):
     """Build MDP environment from configuration.
     
     Creates the appropriate environment type based on config complexity.
+    Handles both EnvironmentConfig and MultiItemEnvironmentConfig.
     """
+    # Dispatch to multi-item builder if applicable
+    if isinstance(config, MultiItemEnvironmentConfig) or getattr(config, 'is_multi_item', False):
+        return build_multi_item_environment_from_config(config)
+    
     # Build suppliers list
     suppliers = []
     for i in range(config.num_suppliers):
@@ -256,6 +343,83 @@ def build_environment_from_config(config: EnvironmentConfig) -> PerishableInvent
             cost_params=cost_params,
             stochastic_lead_times=stochastic_lead_times
         )
+
+
+def build_multi_item_environment_from_config(config: MultiItemEnvironmentConfig):
+    """Build multi-item MDP from MultiItemEnvironmentConfig.
+    
+    Returns:
+        MultiItemPerishableInventoryMDP
+    """
+    from perishable_inventory_mdp.environment import MultiItemPerishableInventoryMDP
+    from perishable_inventory_mdp.costs import CostParameters
+    
+    # Build items list
+    items = []
+    for i in range(config.num_items):
+        items.append({
+            'id': i,
+            'shelf_life': config.item_shelf_lives[i] if i < len(config.item_shelf_lives) else 5,
+            'name': config.item_names[i] if i < len(config.item_names) else f"Item_{i}",
+            'demand_multiplier': config.item_demand_multipliers[i] if i < len(config.item_demand_multipliers) else 1.0
+        })
+    
+    # Build suppliers list
+    suppliers = []
+    for i in range(config.num_suppliers):
+        supplier = {
+            'id': i,
+            'lead_time': config.lead_times[i] if i < len(config.lead_times) else 1,
+            'unit_cost': config.unit_costs[i] if i < len(config.unit_costs) else 1.0,
+            'capacity': config.capacities[i] if i < len(config.capacities) else 100.0,
+            'fixed_cost': 0.0,
+            'moq': 1
+        }
+        # Add item coverage if specified
+        if config.supplier_item_coverage and i in config.supplier_item_coverage:
+            supplier['items_supplied'] = config.supplier_item_coverage[i]
+        suppliers.append(supplier)
+    
+    # Build demand process (base demand, will be scaled by item multipliers)
+    demand_process = _build_demand_process_multi_item(config)
+    
+    # Build cost parameters using max shelf life
+    max_shelf_life = max(config.item_shelf_lives)
+    cost_params = CostParameters.age_dependent_holding(
+        shelf_life=max_shelf_life,
+        base_holding=config.holding_cost_base,
+        age_premium=config.holding_cost_age_premium,
+        shortage_cost=config.shortage_cost,
+        spoilage_cost=config.spoilage_cost
+    )
+    
+    return MultiItemPerishableInventoryMDP(
+        items=items,
+        suppliers=suppliers,
+        demand_process=demand_process,
+        cost_params=cost_params
+    )
+
+
+def _build_demand_process_multi_item(config: MultiItemEnvironmentConfig):
+    """Build demand process for multi-item config."""
+    if config.demand_type == "stationary":
+        return PoissonDemand(config.mean_demand)
+    elif config.demand_type == "seasonal":
+        return SeasonalDemand(
+            base_rate=config.mean_demand,
+            amplitude=config.seasonality_amplitude,
+            period=50
+        )
+    elif config.demand_type == "composite":
+        return CompositeDemand(
+            base_rate=config.mean_demand,
+            seasonality_amplitude=config.seasonality_amplitude,
+            spike_prob=config.spike_probability,
+            spike_multiplier=config.spike_multiplier
+        )
+    else:
+        return PoissonDemand(config.mean_demand)
 
 
 def _build_demand_process(config: EnvironmentConfig):
@@ -529,12 +693,174 @@ def generate_extreme_environments(
     return configs
 
 
+def generate_ultra_environments(
+    rng: np.random.RandomState,
+    count: int = 10
+) -> List[EnvironmentConfig]:
+    """Generate ULTRA complexity environments.
+    
+    Characteristics:
+    - 10-15 suppliers
+    - Extreme demand volatility (composite + trends + spikes)
+    - High probability of crisis
+    - Tight constraints and MOQs
+    - "200x more complex" than extreme
+    """
+    configs = []
+    
+    for _ in range(count):
+        shelf_life = rng.choice([5, 10, 15])
+        mean_demand = rng.uniform(50, 200)  # Much higher demand
+        num_suppliers = rng.choice([10, 11, 12, 13, 14, 15])
+        
+        # Generate supplier parameters
+        lead_times = []
+        unit_costs = []
+        capacities = []
+        
+        base_cost = rng.uniform(0.5, 5.0)
+        
+        for i in range(num_suppliers):
+            # Highly varied lead times (1 to 10)
+            lt = rng.randint(1, 11)
+            lead_times.append(lt)
+            
+            # Cost structure: some cheap/slow, some fast/expensive, some random
+            if i < 3: # Cheap base suppliers
+                cost_mult = rng.uniform(0.5, 0.8)
+            elif i > num_suppliers - 3: # Expensive emergency suppliers
+                cost_mult = rng.uniform(2.0, 5.0)
+            else:
+                cost_mult = rng.uniform(0.8, 2.0)
+                
+            unit_costs.append(base_cost * cost_mult)
+            
+            # Tight capacities relative to demand
+            # Total capacity should be just enough to cover demand + safety
+            # Individual capacities small
+            cap = rng.uniform(mean_demand * 0.1, mean_demand * 0.3)
+            capacities.append(cap)
+        
+        # Extreme demand variability
+        seasonality = rng.uniform(0.4, 0.8)
+        spike_prob = rng.uniform(0.1, 0.25)
+        spike_mult = rng.uniform(5.0, 10.0) # Massive spikes
+        trend_slope = rng.uniform(-0.05, 0.05) # Significant trends
+        
+        # Always stochastic lead times with high variance
+        lt_variance = rng.uniform(0.3, 0.6)
+        
+        # Crisis almost always enabled
+        enable_crisis = rng.random() < 0.9
+        crisis_prob = rng.uniform(0.1, 0.3) if enable_crisis else 0.0
+        
+        config = EnvironmentConfig(
+            shelf_life=shelf_life,
+            mean_demand=mean_demand,
+            num_suppliers=num_suppliers,
+            lead_times=tuple(lead_times),
+            unit_costs=tuple(unit_costs),
+            capacities=tuple(capacities),
+            demand_type="composite",
+            seasonality_amplitude=seasonality,
+            trend_slope=trend_slope,
+            spike_probability=spike_prob,
+            spike_multiplier=spike_mult,
+            stochastic_lead_times=True,
+            lead_time_variance=lt_variance,
+            enable_crisis=enable_crisis,
+            crisis_probability=crisis_prob,
+            shortage_cost=rng.uniform(20.0, 100.0), # High penalties
+            spoilage_cost=rng.uniform(10.0, 50.0),
+            complexity="ultra"
+        )
+        configs.append(config)
+    
+    return configs
+
+
+def generate_multi_item_environments(
+    rng: np.random.RandomState,
+    count: int = 15
+) -> List[MultiItemEnvironmentConfig]:
+    """Generate multi-item environments with varying complexity.
+    
+    Characteristics:
+    - 2-5 items with different shelf lives
+    - 2-4 suppliers
+    - Varying demand multipliers per item
+    - Optional supplier-item coverage restrictions
+    """
+    configs = []
+    
+    for _ in range(count):
+        num_items = rng.choice([2, 3, 4, 5])
+        num_suppliers = rng.choice([2, 3, 4])
+        
+        # Generate item parameters
+        item_shelf_lives = tuple(rng.choice([3, 4, 5, 6, 7]) for _ in range(num_items))
+        item_demand_multipliers = tuple(rng.uniform(0.5, 1.5) for _ in range(num_items))
+        item_names = tuple(f"Item_{chr(65+i)}" for i in range(num_items))  # Item_A, Item_B, ...
+        
+        # Generate supplier parameters
+        base_cost = rng.uniform(0.5, 2.0)
+        lead_times = []
+        unit_costs = []
+        capacities = []
+        
+        for i in range(num_suppliers):
+            lt = 1 + i + rng.choice([0, 1])
+            lead_times.append(lt)
+            cost_mult = 1.0 + (num_suppliers - 1 - i) * rng.uniform(0.3, 0.8)
+            unit_costs.append(base_cost * cost_mult)
+            capacities.append(rng.choice([50.0, 75.0, 100.0]))
+        
+        # Random demand type
+        demand_type = rng.choice(["stationary", "seasonal", "composite"])
+        seasonality = rng.uniform(0.1, 0.3) if demand_type in ["seasonal", "composite"] else 0.0
+        spike_prob = rng.uniform(0.02, 0.08) if demand_type == "composite" else 0.0
+        spike_mult = rng.uniform(1.5, 2.5) if demand_type == "composite" else 1.0
+        
+        # Optional supplier-item coverage (30% chance of restriction)
+        supplier_item_coverage = None
+        if rng.random() < 0.3 and num_suppliers >= 2 and num_items >= 2:
+            supplier_item_coverage = {}
+            for sid in range(num_suppliers):
+                # Each supplier covers 50-100% of items
+                num_covered = rng.randint(num_items // 2 + 1, num_items + 1)
+                covered_items = list(rng.choice(num_items, size=num_covered, replace=False))
+                supplier_item_coverage[sid] = covered_items
+        
+        config = MultiItemEnvironmentConfig(
+            num_items=num_items,
+            item_shelf_lives=item_shelf_lives,
+            item_demand_multipliers=item_demand_multipliers,
+            item_names=item_names,
+            mean_demand=rng.uniform(8, 20),
+            num_suppliers=num_suppliers,
+            lead_times=tuple(lead_times),
+            unit_costs=tuple(unit_costs),
+            capacities=tuple(capacities),
+            supplier_item_coverage=supplier_item_coverage,
+            demand_type=demand_type,
+            seasonality_amplitude=seasonality,
+            spike_probability=spike_prob,
+            spike_multiplier=spike_mult,
+            complexity="multi_item"
+        )
+        configs.append(config)
+    
+    return configs
+
+
 def create_environment_suite(
     seed: int = 42,
     simple_count: int = 20,
     moderate_count: int = 30,
     complex_count: int = 35,
-    extreme_count: int = 20
+    extreme_count: int = 20,
+    ultra_count: int = 10,
+    multi_item_count: int = 15
 ) -> EnvironmentSuite:
     """Create a complete environment suite with 100+ unique environments.
     
@@ -544,6 +870,8 @@ def create_environment_suite(
         moderate_count: Number of moderate environments
         complex_count: Number of complex environments
         extreme_count: Number of extreme environments
+        ultra_count: Number of ultra environments
+        multi_item_count: Number of multi-item environments
     
     Returns:
         EnvironmentSuite with unique configurations
@@ -556,6 +884,8 @@ def create_environment_suite(
     moderate_configs = generate_moderate_environments(rng, moderate_count)
     complex_configs = generate_complex_environments(rng, complex_count)
     extreme_configs = generate_extreme_environments(rng, extreme_count)
+    ultra_configs = generate_ultra_environments(rng, ultra_count)
+    multi_item_configs = generate_multi_item_environments(rng, multi_item_count)
     
     # Add to suite (duplicates are automatically filtered)
     for config in simple_configs:
@@ -566,18 +896,24 @@ def create_environment_suite(
         suite.add_config(config)
     for config in extreme_configs:
         suite.add_config(config)
+    for config in ultra_configs:
+        suite.add_config(config)
+    for config in multi_item_configs:
+        suite.add_config(config)
     
     return suite
 
 
 def get_canonical_suite() -> EnvironmentSuite:
-    """Get the canonical 105-environment suite for benchmarking.
+    """Get the canonical 120-environment suite for benchmarking.
     
     Returns a reproducible suite with:
     - 20 simple environments
     - 30 moderate environments
     - 35 complex environments
     - 20 extreme environments
+    - 10 ultra environments
+    - 15 multi-item environments
     """
     return create_environment_suite(seed=42)
 

@@ -83,7 +83,11 @@ class PerishableInventoryGymWrapper(gym.Env):
         seasonality_period: int = 50,
         contract_manager: Optional[ContractManager] = None,
         action_bins_slow: Optional[List[float]] = None,
-        action_bins_fast: Optional[List[float]] = None
+        action_bins_fast: Optional[List[float]] = None,
+        # Fixed-size parameters for vectorized training
+        max_suppliers: int = 15,
+        max_shelf_life: int = 15,
+        max_pipeline_size: int = 100  # Max sum of lead times across all suppliers
     ):
         """
         Initialize enhanced gym wrapper.
@@ -97,6 +101,9 @@ class PerishableInventoryGymWrapper(gym.Env):
             contract_manager: Optional contract manager for contract features
             action_bins_slow: Custom action bins for slow supplier
             action_bins_fast: Custom action bins for fast supplier
+            max_suppliers: Maximum number of suppliers for fixed observation size
+            max_shelf_life: Maximum shelf life for fixed observation size
+            max_pipeline_size: Maximum total pipeline size for fixed observation size
         """
         super().__init__()
         self.mdp = mdp
@@ -110,7 +117,12 @@ class PerishableInventoryGymWrapper(gym.Env):
         self.num_suppliers = len(mdp.suppliers)
         self.supplier_info = self._analyze_suppliers()
         
-        # --- Action space (asymmetric) ---
+        # --- Fixed-size parameters for vectorized training (must be set before space setup) ---
+        self.max_suppliers = max_suppliers
+        self.max_shelf_life = max_shelf_life
+        self.max_pipeline_size = max_pipeline_size
+        
+        # --- Action space (asymmetric, FIXED SIZE) ---
         # Default bins if not provided
         self.action_bins_slow = action_bins_slow or [0, 10, 20, 30, 40, 50, 60]
         self.action_bins_fast = action_bins_fast or [0, 5, 10, 15, 20]
@@ -118,7 +130,7 @@ class PerishableInventoryGymWrapper(gym.Env):
         # Map supplier IDs to action bins based on cost
         self._setup_action_space()
         
-        # --- Observation space ---
+        # --- Observation space (FIXED SIZE for vectorized training) ---
         self._setup_observation_space()
         
         # --- Internal state tracking ---
@@ -154,7 +166,11 @@ class PerishableInventoryGymWrapper(gym.Env):
         return info
     
     def _setup_action_space(self):
-        """Setup asymmetric MultiDiscrete action space."""
+        """Setup FIXED-SIZE asymmetric MultiDiscrete action space.
+        
+        Pads to max_suppliers dimensions. Actions for non-existent suppliers
+        are ignored (treated as 0 order quantity).
+        """
         # Identify slow (cheap) and fast (expensive) suppliers by cost
         supplier_costs = [(sid, info['unit_cost']) for sid, info in self.supplier_info.items()]
         supplier_costs.sort(key=lambda x: x[1])  # Sort by cost ascending
@@ -181,36 +197,46 @@ class PerishableInventoryGymWrapper(gym.Env):
             action_dims.append(len(bins))
             self.supplier_order.append(sid)
         
+        # Pad action dimensions to max_suppliers (using 1-action dummy slots)
+        # Dummy slots only have action 0 -> no order for non-existent suppliers
+        while len(action_dims) < self.max_suppliers:
+            action_dims.append(1)  # Single action (0 = no order)
+        
         self.action_space = spaces.MultiDiscrete(action_dims)
         
     def _setup_observation_space(self):
-        """Setup enhanced observation space."""
+        """Setup FIXED-SIZE observation space for vectorized training.
+        
+        Uses max_suppliers, max_shelf_life, max_pipeline_size to ensure
+        all environments have identical observation shapes regardless of
+        actual supplier count or shelf life.
+        """
         self.shelf_life = self.mdp.shelf_life
         
-        # Calculate observation components sizes
+        # Calculate observation components sizes using FIXED maximums
         self.obs_components = {}
         
-        # 1. Inventory buckets
-        self.obs_components['inventory'] = self.shelf_life
+        # 1. Inventory buckets (padded to max_shelf_life)
+        self.obs_components['inventory'] = self.max_shelf_life
         
-        # 2. Pipeline quantities (sum of lead times across suppliers)
+        # 2. Pipeline quantities (padded to max_pipeline_size)
         self.pipeline_size = sum(s['lead_time'] for s in self.mdp.suppliers)
-        self.obs_components['pipeline'] = self.pipeline_size
+        self.obs_components['pipeline'] = self.max_pipeline_size
         
         # 3. Backorders
         self.obs_components['backorders'] = 1
         
-        # 4. Supplier costs (normalized)
-        self.obs_components['supplier_costs'] = self.num_suppliers
+        # 4. Supplier costs (padded to max_suppliers)
+        self.obs_components['supplier_costs'] = self.max_suppliers
         
-        # 5. Lead times (normalized)
-        self.obs_components['lead_times'] = self.num_suppliers
+        # 5. Lead times (padded to max_suppliers)
+        self.obs_components['lead_times'] = self.max_suppliers
         
         # 6. Crisis state (one-hot: normal, elevated, crisis)
         self.obs_components['crisis'] = 3
         
-        # 7. Contract discounts (per supplier)
-        self.obs_components['contracts'] = self.num_suppliers
+        # 7. Contract discounts (padded to max_suppliers)
+        self.obs_components['contracts'] = self.max_suppliers
         
         # 8. Time features (sin, cos)
         self.obs_components['time'] = 2
@@ -218,12 +244,12 @@ class PerishableInventoryGymWrapper(gym.Env):
         # 9. Demand history
         self.obs_components['demand_history'] = self.demand_history_length
         
-        # Total observation size
+        # Total observation size (FIXED)
         total_obs_size = sum(self.obs_components.values())
         
         self.observation_space = spaces.Box(
-            low=-1.0,  # Allow negative for some normalized values
-            high=2.0,  # Allow slightly above 1 for edge cases
+            low=-1.0,
+            high=2.0,
             shape=(total_obs_size,),
             dtype=np.float32
         )
@@ -294,46 +320,58 @@ class PerishableInventoryGymWrapper(gym.Env):
         return obs, reward, terminated, truncated, info
     
     def _get_observation(self, state: InventoryState) -> np.ndarray:
-        """Build enhanced observation vector."""
+        """Build FIXED-SIZE observation vector with padding."""
         obs_parts = []
         
-        # 1. Inventory buckets (normalized)
+        # 1. Inventory buckets (padded to max_shelf_life)
         inv_normalized = state.inventory / max(self.max_inventory, 1.0)
-        obs_parts.append(inv_normalized)
+        inv_padded = np.zeros(self.max_shelf_life)
+        inv_padded[:len(inv_normalized)] = inv_normalized
+        obs_parts.append(inv_padded)
         
-        # 2. Pipeline quantities (normalized by capacity)
+        # 2. Pipeline quantities (padded to max_pipeline_size)
+        pipeline_flat = []
         sorted_suppliers = sorted(state.pipelines.items())
         for sid, pipeline in sorted_suppliers:
             capacity = self.supplier_info.get(sid, {}).get('capacity', 100)
             pipeline_normalized = pipeline.pipeline / max(capacity, 1.0)
-            obs_parts.append(pipeline_normalized)
+            pipeline_flat.extend(pipeline_normalized.tolist())
+        pipeline_padded = np.zeros(self.max_pipeline_size)
+        pipeline_padded[:len(pipeline_flat)] = pipeline_flat
+        obs_parts.append(pipeline_padded)
         
         # 3. Backorders (normalized by expected demand)
         mean_demand = self._get_mean_demand()
         backorders_normalized = np.array([state.backorders / max(mean_demand * 2, 1.0)])
         obs_parts.append(backorders_normalized)
         
-        # 4. Supplier costs (normalized)
+        # 4. Supplier costs (padded to max_suppliers)
         costs_normalized = []
         for sid in sorted(self.supplier_info.keys()):
             cost = self.supplier_info[sid]['unit_cost']
             costs_normalized.append(cost / self.max_supplier_cost)
-        obs_parts.append(np.array(costs_normalized))
+        costs_padded = np.zeros(self.max_suppliers)
+        costs_padded[:len(costs_normalized)] = costs_normalized
+        obs_parts.append(costs_padded)
         
-        # 5. Lead times (normalized)
+        # 5. Lead times (padded to max_suppliers)
         lead_times_normalized = []
         for sid in sorted(self.supplier_info.keys()):
             lt = self.supplier_info[sid]['lead_time']
-            lead_times_normalized.append(lt / self.max_lead_time)
-        obs_parts.append(np.array(lead_times_normalized))
+            lead_times_normalized.append(lt / max(self.max_lead_time, 1))
+        lt_padded = np.zeros(self.max_suppliers)
+        lt_padded[:len(lead_times_normalized)] = lead_times_normalized
+        obs_parts.append(lt_padded)
         
         # 6. Crisis state (one-hot)
         crisis_one_hot = self._get_crisis_one_hot(state)
         obs_parts.append(crisis_one_hot)
         
-        # 7. Contract discounts
+        # 7. Contract discounts (padded to max_suppliers)
         contract_discounts = self._get_contract_discounts()
-        obs_parts.append(contract_discounts)
+        contracts_padded = np.zeros(self.max_suppliers)
+        contracts_padded[:len(contract_discounts)] = contract_discounts
+        obs_parts.append(contracts_padded)
         
         # 8. Time features (sin/cos for seasonality)
         time_features = self._get_time_features()

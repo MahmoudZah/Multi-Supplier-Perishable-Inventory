@@ -1,0 +1,968 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================================================
+% PACKAGES
+% ============================================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+% ============================================================================
+% CONFIGURATION
+% ============================================================================
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    urlcolor=blue!70!black,
+    citecolor=green!50!black
+}
+
+% Code listing style
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{pythonstyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{blue},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    frame=single,
+    framerule=0.5pt
+}
+\lstset{style=pythonstyle}
+
+\lstdefinestyle{bashstyle}{
+    backgroundcolor=\color{black!5},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    frame=single,
+    framerule=0.5pt
+}
+
+% Tip/Note boxes
+\newtcolorbox{notebox}[1][]{
+    colback=blue!5,
+    colframe=blue!75!black,
+    fonttitle=\bfseries,
+    title=#1
+}
+
+\newtcolorbox{warningbox}[1][]{
+    colback=orange!10,
+    colframe=orange!75!black,
+    fonttitle=\bfseries,
+    title=#1
+}
+
+\newtcolorbox{tipbox}[1][]{
+    colback=green!5,
+    colframe=green!50!black,
+    fonttitle=\bfseries,
+    title=#1
+}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Multi-Supplier Perishable Inventory MDP}
+\lhead{Experimental Work Guide}
+\rfoot{Page \thepage}
+
+% ============================================================================
+% DOCUMENT
+% ============================================================================
+\title{
+    \textbf{Comprehensive Guide to Model Training, Testing, and\\
+    Experimental Report Generation}\\[0.5em]
+    \large Multi-Supplier Perishable Inventory MDP with\\
+    Deep Reinforcement Learning
+}
+\author{Generated Documentation}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This guide provides a complete walkthrough for training, testing, and documenting experiments using the Multi-Supplier Perishable Inventory MDP codebase. It covers environment setup, deep reinforcement learning model training with PPO, curriculum learning strategies, benchmarking against baseline policies (TBS), and generating publication-ready experimental results. The document is structured to serve as both a practical tutorial and a template for the ``Experimental Work'' section in scientific papers.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================================
+\section{Introduction}
+% ============================================================================
+
+\subsection{Problem Overview}
+
+The Multi-Supplier Perishable Inventory problem is a challenging operations research problem involving:
+
+\begin{itemize}
+    \item \textbf{Perishable goods}: Products with limited shelf life that spoil if not sold
+    \item \textbf{Multiple suppliers}: Varying lead times, costs, and capacities
+    \item \textbf{Stochastic demand}: Uncertain customer arrivals following various distributions
+    \item \textbf{Complex cost structure}: Holding costs, shortage penalties, spoilage losses, and procurement costs
+\end{itemize}
+
+The objective is to learn an optimal ordering policy that minimizes total expected costs while maintaining high service levels.
+
+\subsection{Why Reinforcement Learning?}
+
+Traditional approaches like the Tailored Base-Surge (TBS) policy work well in stationary environments but struggle with:
+
+\begin{itemize}
+    \item Non-stationary demand (trends, seasonality, demand spikes)
+    \item Stochastic lead times
+    \item Crisis dynamics and supply disruptions
+    \item Complex multi-supplier interactions
+\end{itemize}
+
+Deep Reinforcement Learning (RL) can potentially discover policies that adapt to these complexities without explicit mathematical programming.
+
+\subsection{Codebase Architecture}
+
+The repository is organized into the following key components:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Directory/File} & \textbf{Purpose} \\
+\midrule
+\texttt{perishable\_inventory\_mdp/} & Core MDP implementation \\
+\quad \texttt{environment.py} & Main MDP logic and state transitions \\
+\quad \texttt{state.py} & Inventory and pipeline state management \\
+\quad \texttt{demand.py} & Demand process generators \\
+\quad \texttt{policies.py} & Baseline policies (TBS, BaseStock) \\
+\quad \texttt{costs.py} & Cost parameter configurations \\
+\quad \texttt{crisis.py} & Crisis dynamics module \\
+\midrule
+\texttt{colab\_training/} & RL Training Infrastructure \\
+\quad \texttt{gym\_env.py} & Gymnasium wrapper with cost-aware observations \\
+\quad \texttt{train\_rl.py} & PPO training script with curriculum learning \\
+\quad \texttt{environment\_suite.py} & 100+ benchmark environments \\
+\quad \texttt{benchmark.py} & RL vs TBS performance comparison \\
+\quad \texttt{callbacks.py} & Custom training callbacks \\
+\midrule
+\texttt{tests/} & Comprehensive test suite \\
+\texttt{examples/} & Usage examples \\
+\bottomrule
+\end{tabular}
+\caption{Repository structure overview}
+\label{tab:structure}
+\end{table}
+
+% ============================================================================
+\section{Environment Setup}
+% ============================================================================
+
+\subsection{Installation}
+
+\subsubsection{Local Installation}
+
+\begin{lstlisting}[style=bashstyle,language=bash]
+# Clone the repository
+git clone https://github.com/MahmoudZah/Multi-Supplier-Perishable-Inventory.git
+cd Multi-Supplier-Perishable-Inventory
+
+# Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install additional RL dependencies
+pip install gymnasium stable-baselines3 shimmy tensorboard
+\end{lstlisting}
+
+\subsubsection{Google Colab Setup}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+# Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Navigate to the project directory
+%cd /content/drive/MyDrive/Multi-Supplier-Perishable-Inventory
+
+# Install dependencies
+!pip install -r requirements.txt
+!pip install gymnasium stable-baselines3 shimmy tensorboard
+\end{lstlisting}
+
+\subsection{Verifying Installation}
+
+Run the test suite to verify correct installation:
+
+\begin{lstlisting}[style=bashstyle,language=bash]
+# Run all tests
+python -m pytest tests/ -v
+
+# Run specific test file
+python -m pytest tests/test_environment.py -v
+
+# Run with coverage
+python -m pytest tests/ --cov=perishable_inventory_mdp
+\end{lstlisting}
+
+\begin{notebox}[Expected Output]
+All tests should pass. The test suite covers:
+\begin{itemize}[noitemsep]
+    \item Core MDP functionality (17 test files)
+    \item Gymnasium wrapper compatibility
+    \item Environment suite generation
+    \item Policy implementations
+\end{itemize}
+\end{notebox}
+
+% ============================================================================
+\section{Understanding the MDP Environment}
+% ============================================================================
+
+\subsection{State Space}
+
+The inventory state at time $t$ is characterized by:
+
+\begin{equation}
+    s_t = \left( \mathbf{I}_t, \{\mathbf{P}_t^{(s)}\}_{s \in \mathcal{S}}, B_t, \mathbf{e}_t \right)
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\mathbf{I}_t = (I_t^{(1)}, \ldots, I_t^{(N)})$: inventory by remaining shelf life ($N$ = shelf life)
+    \item $\mathbf{P}_t^{(s)}$: pipeline quantities from supplier $s$
+    \item $B_t$: backorders (unfulfilled demand)
+    \item $\mathbf{e}_t$: exogenous state (crisis level, seasonality phase)
+\end{itemize}
+
+\subsection{Action Space}
+
+Actions specify order quantities for each supplier:
+
+\begin{equation}
+    a_t = \{q_t^{(s)}\}_{s \in \mathcal{S}}, \quad 0 \leq q_t^{(s)} \leq C^{(s)}
+\end{equation}
+
+The Gymnasium wrapper uses an \textbf{asymmetric MultiDiscrete} action space that encourages ordering from cheaper (slower) suppliers:
+
+\begin{itemize}
+    \item \textbf{Slow supplier}: 7 action levels $\rightarrow$ [0, 10, 20, 30, 40, 50, 60]
+    \item \textbf{Fast supplier}: 5 action levels $\rightarrow$ [0, 5, 10, 15, 20]
+\end{itemize}
+
+\subsection{Transition Dynamics}
+
+At each period $t$, the following sequence occurs:
+
+\begin{enumerate}
+    \item \textbf{Order placement}: Agent places orders $a_t$
+    \item \textbf{Lead time advancement}: Pipeline orders advance one period
+    \item \textbf{Arrivals}: Orders with zero remaining lead time arrive
+    \item \textbf{Demand realization}: Stochastic demand $D_t$ is observed
+    \item \textbf{Sales}: $\min(\text{Available Inventory}, D_t + B_{t-1})$
+    \item \textbf{Spoilage}: Items with remaining shelf life = 1 that aren't sold
+    \item \textbf{Aging}: Remaining inventory ages by one period
+\end{enumerate}
+
+\subsection{Cost Structure}
+
+The period cost function is:
+
+\begin{equation}
+    c(s_t, a_t, D_t) = c_{\text{purchase}} + c_{\text{holding}} + c_{\text{shortage}} + c_{\text{spoilage}}
+\end{equation}
+
+where:
+\begin{align}
+    c_{\text{purchase}} &= \sum_{s \in \mathcal{S}} p^{(s)} \cdot q_t^{(s)} \\
+    c_{\text{holding}} &= \sum_{i=1}^{N} h_i \cdot I_t^{(i)} \quad \text{(age-dependent)} \\
+    c_{\text{shortage}} &= b \cdot \max(0, D_t - \text{Sales}_t) \\
+    c_{\text{spoilage}} &= w \cdot \text{Spoiled}_t
+\end{align}
+
+% ============================================================================
+\section{Training the RL Model}
+% ============================================================================
+
+\subsection{Training Configuration}
+
+The training system supports extensive configuration through JSON files or command-line arguments.
+
+\subsubsection{Default Configuration}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+DEFAULT_CONFIG = {
+    "total_timesteps": 5_000_000,        # Total training steps
+    "initial_learning_rate": 3e-4,        # Starting learning rate
+    "final_learning_rate": 0.0,           # Final LR (linear decay)
+    "initial_entropy_coef": 0.01,         # Starting entropy coefficient
+    "final_entropy_coef": 0.001,          # Final entropy coefficient
+    "curriculum_enabled": True,           # Enable curriculum learning
+    "curriculum_thresholds": {
+        "simple": -5.0,                   # Advance when reward > -5
+        "moderate": -8.0,
+        "complex": -12.0
+    },
+    "n_envs": 8,                          # Parallel environments
+    "episode_length": 500,                # Max steps per episode
+    "checkpoint_freq": 100_000,           # Checkpoint frequency
+    "eval_freq": 50_000,                  # Evaluation frequency
+    "benchmark_freq": 100_000,            # TBS comparison frequency
+    "seed": 42,                           # Random seed
+    "policy_kwargs": {
+        "net_arch": [256, 256]            # Neural network architecture
+    }
+}
+\end{lstlisting}
+
+\subsection{Running Training}
+
+\subsubsection{Quick Test Run}
+
+Verify the training pipeline works correctly:
+
+\begin{lstlisting}[style=bashstyle,language=bash]
+# Quick test (10,000 steps, ~1-2 minutes)
+python colab_training/train_rl.py --test-mode
+\end{lstlisting}
+
+\subsubsection{Full Training}
+
+\begin{lstlisting}[style=bashstyle,language=bash]
+# Full training (5M steps, several hours on GPU)
+python colab_training/train_rl.py
+
+# With custom timesteps
+python colab_training/train_rl.py --timesteps 1000000
+
+# With custom config file
+python colab_training/train_rl.py --config my_config.json
+
+# With verbose output
+python colab_training/train_rl.py --verbose
+\end{lstlisting}
+
+\subsection{Curriculum Learning}
+
+The training system implements progressive complexity training:
+
+\begin{figure}[H]
+\centering
+\begin{tcolorbox}[width=0.9\textwidth]
+\textbf{Curriculum Progression:}
+\begin{enumerate}[noitemsep]
+    \item \textbf{Simple} (20 environments): Stationary demand, 2 suppliers, deterministic lead times
+    \item \textbf{Moderate} (30 environments): Seasonal/spiky demand, possible stochastic lead times
+    \item \textbf{Complex} (35 environments): Composite demand, 2-3 suppliers, crisis dynamics
+    \item \textbf{Extreme} (20 environments): 3-4 suppliers, high volatility, tight capacity
+\end{enumerate}
+\end{tcolorbox}
+\caption{Curriculum learning complexity levels}
+\end{figure}
+
+The agent advances to the next complexity level when:
+\begin{itemize}
+    \item Mean episode reward exceeds the threshold (e.g., $> -5$ for simple)
+    \item Minimum episodes at current level completed (default: 50)
+\end{itemize}
+
+\subsection{Monitoring Training}
+
+\subsubsection{TensorBoard}
+
+\begin{lstlisting}[style=bashstyle,language=bash]
+# Start TensorBoard
+tensorboard --logdir logs/tensorboard
+
+# In Colab
+%load_ext tensorboard
+%tensorboard --logdir logs/tensorboard
+\end{lstlisting}
+
+Key metrics to monitor:
+\begin{itemize}
+    \item \texttt{rollout/ep\_rew\_mean}: Mean episode reward
+    \item \texttt{schedule/learning\_rate}: Current learning rate
+    \item \texttt{curriculum/level}: Current complexity level (0-3)
+    \item \texttt{benchmark/rl\_vs\_tbs\_ratio}: Cost ratio vs TBS baseline
+\end{itemize}
+
+\subsubsection{Output Directory Structure}
+
+\begin{lstlisting}[style=bashstyle]
+logs/
+├── tensorboard/          # TensorBoard logs
+├── checkpoints/          # Periodic model checkpoints
+│   ├── ppo_perishable_100000_steps.zip
+│   ├── ppo_perishable_200000_steps.zip
+│   └── ...
+├── best_model/           # Best model during training
+│   └── best_model.zip
+├── eval/                 # Evaluation logs
+├── benchmark/            # RL vs TBS comparison data
+└── final_model.zip       # Final trained model
+\end{lstlisting}
+
+\subsection{Hyperparameter Tuning}
+
+\begin{warningbox}[Important: Hyperparameter Sensitivity]
+RL algorithms are sensitive to hyperparameters. The defaults work reasonably well, but optimal performance requires tuning. Consider using:
+\begin{itemize}[noitemsep]
+    \item Optuna for automated hyperparameter search
+    \item Ray Tune for distributed tuning
+    \item RL Baselines3 Zoo for structured experiments
+\end{itemize}
+\end{warningbox}
+
+Key hyperparameters to tune:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Range} & \textbf{Effect} \\
+\midrule
+\texttt{learning\_rate} & $[10^{-5}, 10^{-3}]$ & Higher = faster but unstable \\
+\texttt{n\_steps} & $[256, 4096]$ & Buffer size before update \\
+\texttt{batch\_size} & $[64, 512]$ & Mini-batch size \\
+\texttt{gamma} & $[0.95, 0.999]$ & Discount factor \\
+\texttt{ent\_coef} & $[0.001, 0.1]$ & Exploration encouragement \\
+\texttt{clip\_range} & $[0.1, 0.3]$ & PPO clipping range \\
+\bottomrule
+\end{tabular}
+\caption{Key hyperparameters and their effects}
+\end{table}
+
+% ============================================================================
+\section{Testing and Evaluation}
+% ============================================================================
+
+\subsection{Running Test Suite}
+
+\subsubsection{Full Test Suite}
+
+\begin{lstlisting}[style=bashstyle,language=bash]
+# Run all tests
+python -m pytest tests/ -v
+
+# With test timing
+python -m pytest tests/ -v --tb=short --durations=10
+
+# Run specific categories
+python -m pytest tests/test_environment.py tests/test_gym_env.py -v
+\end{lstlisting}
+
+\subsubsection{Key Test Categories}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Test File} & \textbf{Coverage} \\
+\midrule
+\texttt{test\_environment.py} & Core MDP logic \\
+\texttt{test\_gym\_env.py} & Gymnasium wrapper \\
+\texttt{test\_environment\_suite.py} & 100+ environment generation \\
+\texttt{test\_policies.py} & TBS, BaseStock policies \\
+\texttt{test\_training.py} & Training pipeline \\
+\texttt{test\_integration.py} & End-to-end tests \\
+\bottomrule
+\end{tabular}
+\caption{Test categories}
+\end{table}
+
+\subsection{Evaluating Trained Models}
+
+\subsubsection{Loading a Trained Model}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+from stable_baselines3 import PPO
+from colab_training.gym_env import create_gym_env
+
+# Load trained model
+model = PPO.load("logs/best_model/best_model.zip")
+
+# Create evaluation environment
+env = create_gym_env(
+    shelf_life=5,
+    mean_demand=10.0,
+    enable_crisis=True
+)
+
+# Run evaluation
+obs, info = env.reset()
+total_reward = 0
+episode_length = 500
+
+for step in range(episode_length):
+    action, _ = model.predict(obs, deterministic=True)
+    obs, reward, terminated, truncated, info = env.step(action)
+    total_reward += reward
+    
+    if terminated or truncated:
+        break
+
+print(f"Total Reward: {total_reward:.2f}")
+print(f"Fill Rate: {info.get('fill_rate', 'N/A')}")
+\end{lstlisting}
+
+\subsubsection{Benchmarking Against Baselines}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+from colab_training.benchmark import (
+    evaluate_policy,
+    compare_policies,
+    generate_performance_report,
+    get_tbs_policy_for_env
+)
+from colab_training.environment_suite import (
+    create_environment_suite,
+    build_environment_from_config
+)
+from colab_training.gym_env import PerishableInventoryGymWrapper
+
+# Load model and create suite
+model = PPO.load("logs/best_model/best_model.zip")
+suite = create_environment_suite(seed=42)
+
+# Compare on subset of environments
+def env_factory(config):
+    mdp = build_environment_from_config(config)
+    return PerishableInventoryGymWrapper(mdp=mdp)
+
+# Run comparison
+report = compare_policies(
+    rl_model=model,
+    env_configs=suite.get_by_complexity("complex")[:5],
+    env_factory=env_factory,
+    n_episodes=10
+)
+
+# Generate report
+print(generate_performance_report(report))
+\end{lstlisting}
+
+\subsection{Metrics for Scientific Reporting}
+
+For publication, report the following metrics:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Metric} & \textbf{Formula} & \textbf{Target} \\
+\midrule
+Fill Rate & $\frac{\text{Sales}}{\text{Demand}}$ & $> 95\%$ \\
+Service Level & $\frac{\text{Periods with no stockout}}{\text{Total periods}}$ & $> 90\%$ \\
+Spoilage Rate & $\frac{\text{Spoiled units}}{\text{Total arrivals}}$ & $< 5\%$ \\
+Average Cost & $\frac{\text{Total cost}}{\text{Periods}}$ & Minimize \\
+RL/TBS Ratio & $\frac{\text{RL Cost}}{\text{TBS Cost}}$ & $< 1.0$ \\
+\bottomrule
+\end{tabular}
+\caption{Key performance metrics}
+\end{table}
+
+% ============================================================================
+\section{Generating Experimental Reports}
+% ============================================================================
+
+\subsection{Experiment Design}
+
+\subsubsection{Required Elements for Reproducibility}
+
+\begin{enumerate}
+    \item \textbf{Multiple Random Seeds}: Train 5-10 agents with different seeds
+    \item \textbf{Separate Train/Test Environments}: Never evaluate on training environments
+    \item \textbf{Statistical Significance}: Report mean $\pm$ standard deviation
+    \item \textbf{Baseline Comparisons}: Always compare against TBS and BaseStock
+\end{enumerate}
+
+\subsubsection{Recommended Experimental Protocol}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+import numpy as np
+from pathlib import Path
+
+# Train multiple models with different seeds
+SEEDS = [42, 43, 44, 45, 46]
+results = []
+
+for seed in SEEDS:
+    # Configure training with this seed
+    config = {
+        "total_timesteps": 5_000_000,
+        "seed": seed,
+        # ... other params
+    }
+    
+    # Train model
+    model = train_with_config(config)
+    
+    # Evaluate on held-out test environments
+    test_suite = create_environment_suite(seed=seed + 100)
+    metrics = evaluate_on_suite(model, test_suite)
+    results.append(metrics)
+
+# Aggregate results
+mean_cost = np.mean([r['mean_cost'] for r in results])
+std_cost = np.std([r['mean_cost'] for r in results])
+print(f"Mean Cost: {mean_cost:.2f} ± {std_cost:.2f}")
+\end{lstlisting}
+
+\subsection{Generating Tables and Figures}
+
+\subsubsection{Performance Summary Table}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+import pandas as pd
+from colab_training.benchmark import ComparisonReport
+
+# Assume 'report' is a ComparisonReport object
+df = report.to_dataframe()
+summary = report.get_summary_by_complexity()
+
+# Export to LaTeX
+latex_table = summary.to_latex(
+    index=False,
+    caption="Performance by Complexity Level",
+    label="tab:results",
+    float_format="%.3f"
+)
+print(latex_table)
+\end{lstlisting}
+
+\subsubsection{Visualization Generation}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+import matplotlib.pyplot as plt
+from colab_training.benchmark import visualize_comparison
+
+# Generate comparison plot
+fig = visualize_comparison(
+    report,
+    save_path="figures/rl_vs_tbs_comparison.pdf"
+)
+
+# Custom learning curve plot
+def plot_learning_curve(log_dir, save_path=None):
+    from tensorboard.backend.event_processing import event_accumulator
+    
+    ea = event_accumulator.EventAccumulator(log_dir)
+    ea.Reload()
+    
+    rewards = ea.Scalars('rollout/ep_rew_mean')
+    steps = [r.step for r in rewards]
+    values = [r.value for r in rewards]
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(steps, values)
+    plt.xlabel('Training Steps')
+    plt.ylabel('Mean Episode Reward')
+    plt.title('Learning Curve')
+    plt.grid(True, alpha=0.3)
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    return plt.gcf()
+\end{lstlisting}
+
+\subsection{Example Results Section}
+
+Below is a template for presenting experimental results:
+
+\begin{tcolorbox}[title=Template: Results Section]
+\textbf{4.1 Training Performance}
+
+The PPO agent was trained for 5 million timesteps using curriculum learning. Training was conducted on [hardware description] and took approximately [X hours]. Figure~\ref{fig:learning} shows the learning curve across complexity levels.
+
+\textbf{4.2 Comparison with Baselines}
+
+Table~\ref{tab:comparison} presents the performance comparison between the trained RL agent and baseline policies across different complexity levels.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Complexity} & \textbf{Policy} & \textbf{Cost} & \textbf{Fill Rate} & \textbf{Spoilage} & \textbf{Ratio} \\
+\midrule
+\multirow{2}{*}{Simple} & RL & $X \pm Y$ & 0.XX & 0.XX & 1.XX \\
+                        & TBS & $X \pm Y$ & 0.XX & 0.XX & 1.00 \\
+\midrule
+\multirow{2}{*}{Complex} & RL & $X \pm Y$ & 0.XX & 0.XX & 0.XX \\
+                         & TBS & $X \pm Y$ & 0.XX & 0.XX & 1.00 \\
+\bottomrule
+\end{tabular}
+\caption{Performance comparison across complexity levels}
+\label{tab:comparison}
+\end{table}
+
+\textbf{4.3 Statistical Analysis}
+
+Results are reported as mean $\pm$ standard deviation across N=5 random seeds. A one-sided t-test was conducted to test whether RL significantly outperforms TBS ($H_0$: $\mu_{RL} \geq \mu_{TBS}$, $H_1$: $\mu_{RL} < \mu_{TBS}$).
+\end{tcolorbox}
+
+% ============================================================================
+\section{Advanced Topics}
+% ============================================================================
+
+\subsection{Custom Environment Configuration}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+from colab_training.environment_suite import EnvironmentConfig
+
+# Create custom environment
+config = EnvironmentConfig(
+    shelf_life=7,
+    mean_demand=25.0,
+    num_suppliers=3,
+    lead_times=(1, 3, 5),
+    unit_costs=(3.0, 1.5, 1.0),
+    capacities=(50.0, 75.0, 100.0),
+    demand_type="composite",
+    seasonality_amplitude=0.3,
+    spike_probability=0.05,
+    spike_multiplier=2.5,
+    stochastic_lead_times=True,
+    lead_time_variance=0.2,
+    enable_crisis=True,
+    crisis_probability=0.05,
+    complexity="custom"
+)
+
+# Build environment
+from colab_training.environment_suite import build_environment_from_config
+mdp = build_environment_from_config(config)
+\end{lstlisting}
+
+\subsection{Reward Shaping}
+
+The wrapper uses configurable reward shaping:
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+from colab_training.gym_env import RewardConfig, PerishableInventoryGymWrapper
+
+# Custom reward configuration
+reward_config = RewardConfig(
+    alpha=0.5,        # Procurement cost weight
+    beta=0.3,         # Holding + spoilage weight
+    gamma=0.2,        # Shortage penalty weight
+    delta=0.1,        # Service bonus
+    target_fill_rate=0.95,
+    normalize=True,
+    normalization_scale=10.0
+)
+
+# Apply to wrapper
+env = PerishableInventoryGymWrapper(
+    mdp=mdp,
+    reward_config=reward_config
+)
+\end{lstlisting}
+
+\subsection{Out-of-Distribution Testing}
+
+Test generalization by modifying environment parameters:
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+# Train on standard environment
+train_config = EnvironmentConfig(mean_demand=10.0, ...)
+
+# Test on OOD environments
+ood_configs = [
+    # Higher demand
+    EnvironmentConfig(mean_demand=20.0, ...),
+    # Different lead times
+    EnvironmentConfig(lead_times=(2, 5), ...),
+    # Demand shocks
+    EnvironmentConfig(spike_probability=0.2, spike_multiplier=5.0, ...),
+]
+
+for ood_config in ood_configs:
+    ood_env = build_and_wrap(ood_config)
+    ood_metrics = evaluate_policy(model, ood_env)
+    print(f"OOD Performance: {ood_metrics}")
+\end{lstlisting}
+
+% ============================================================================
+\section{Troubleshooting}
+% ============================================================================
+
+\subsection{Common Issues}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}p{4.5cm}p{8cm}@{}}
+\toprule
+\textbf{Issue} & \textbf{Solution} \\
+\midrule
+\texttt{ValueError: observation space mismatch} & Ensure all environments use same \texttt{max\_suppliers}, \texttt{max\_shelf\_life}, and \texttt{max\_pipeline\_size} parameters \\
+\midrule
+Training diverges (NaN rewards) & Reduce learning rate, check reward normalization, use gradient clipping \\
+\midrule
+Agent doesn't improve & Increase training timesteps, tune hyperparameters, check reward shaping \\
+\midrule
+Out of memory (OOM) & Reduce \texttt{n\_envs}, reduce batch size, use \texttt{SubprocVecEnv} instead of \texttt{DummyVecEnv} \\
+\midrule
+TBS baseline fails & Ensure environment has at least 2 suppliers with different costs \\
+\bottomrule
+\end{tabular}
+\caption{Common issues and solutions}
+\end{table}
+
+\subsection{Debugging Tips}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+# Verbose environment debugging
+env = create_gym_env(...)
+obs, info = env.reset()
+
+print("Observation space:", env.observation_space)
+print("Action space:", env.action_space)
+print("Observation shape:", obs.shape)
+print("Supplier action bins:", env.get_supplier_action_space_info())
+print("Observation components:", env.get_observation_space_info())
+\end{lstlisting}
+
+% ============================================================================
+\section{Checklist for Publication}
+% ============================================================================
+
+\begin{tipbox}[Publication Readiness Checklist]
+\begin{itemize}[leftmargin=*]
+    \item[$\square$] Train with 5+ random seeds
+    \item[$\square$] Report mean $\pm$ std for all metrics
+    \item[$\square$] Compare against TBS and BaseStock baselines
+    \item[$\square$] Test on held-out environments (not used in training)
+    \item[$\square$] Include out-of-distribution generalization tests
+    \item[$\square$] Report all hyperparameters used
+    \item[$\square$] Include learning curves
+    \item[$\square$] Perform statistical significance tests
+    \item[$\square$] Document hardware and training time
+    \item[$\square$] Provide code repository link
+\end{itemize}
+\end{tipbox}
+
+% ============================================================================
+\section{Conclusion}
+% ============================================================================
+
+This guide has provided a comprehensive walkthrough for:
+
+\begin{enumerate}
+    \item Setting up the Multi-Supplier Perishable Inventory MDP environment
+    \item Training PPO agents with curriculum learning
+    \item Evaluating and benchmarking against TBS baselines
+    \item Generating publication-ready experimental results
+\end{enumerate}
+
+The codebase includes 100+ unique environments across 5 complexity levels, enabling thorough evaluation of RL algorithms against traditional operations research methods.
+
+For questions or issues, please open an issue on the GitHub repository.
+
+% ============================================================================
+% APPENDIX
+% ============================================================================
+\appendix
+
+\section{Complete Configuration Reference}
+\label{app:config}
+
+\begin{lstlisting}[style=pythonstyle,language=Python]
+# Full configuration with all options
+full_config = {
+    # MDP Parameters
+    "shelf_life": 5,                 # 3-15
+    "mean_demand": 10.0,             # 5-200
+    "num_suppliers": 2,              # 2-15
+    
+    # Training Parameters
+    "total_timesteps": 5_000_000,
+    "initial_learning_rate": 3e-4,
+    "final_learning_rate": 0.0,
+    "initial_entropy_coef": 0.01,
+    "final_entropy_coef": 0.001,
+    "n_envs": 8,
+    "episode_length": 500,
+    
+    # Curriculum Parameters
+    "curriculum_enabled": True,
+    "curriculum_thresholds": {
+        "simple": -5.0,
+        "moderate": -8.0,
+        "complex": -12.0
+    },
+    
+    # Evaluation Parameters
+    "eval_freq": 50_000,
+    "n_eval_episodes": 10,
+    "checkpoint_freq": 100_000,
+    "benchmark_freq": 100_000,
+    
+    # Network Architecture
+    "policy_kwargs": {
+        "net_arch": [256, 256]
+    },
+    
+    # Random Seed
+    "seed": 42
+}
+\end{lstlisting}
+
+\section{Environment Suite Statistics}
+\label{app:suite}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Complexity} & \textbf{Count} & \textbf{Suppliers} & \textbf{Crisis} & \textbf{Stochastic LT} \\
+\midrule
+Simple & 20 & 2 & No & No \\
+Moderate & 30 & 2 & No & 30\% \\
+Complex & 35 & 2-3 & 40\% & 60\% \\
+Extreme & 20 & 3-4 & 70\% & 100\% \\
+Ultra & 10 & 10-15 & 90\% & 100\% \\
+\midrule
+\textbf{Total} & \textbf{115} & & & \\
+\bottomrule
+\end{tabular}
+\caption{Environment suite statistics}
+\end{table}
+
+\end{document}

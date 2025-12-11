@@ -707,3 +707,290 @@ def create_enhanced_mdp(
         enable_rejection=enable_rejection
     )
 
+
+class MultiItemPerishableInventoryMDP(InventoryEnvironment):
+    """
+    Multi-Item Perishable Inventory MDP Environment.
+    
+    Extends the MDP framework to support multiple items with:
+    - Per-item demand generation (using demand_multiplier)
+    - Per-item FIFO serving and spoilage
+    - Joint ordering actions: Dict[(item_id, supplier_id), float]
+    - Supplier-item coverage constraints
+    
+    Attributes:
+        items: List of item configurations
+        suppliers: List of supplier configurations
+        demand_process: Base demand process (scaled per item)
+        cost_params: Cost parameters (shared across items)
+    """
+    
+    def __init__(
+        self,
+        items: List[Dict],
+        suppliers: List[Dict],
+        demand_process: DemandProcess,
+        cost_params: CostParameters,
+        stochastic_lead_times: Optional[Dict[int, StochasticLeadTime]] = None,
+        lost_sales: bool = False
+    ):
+        """
+        Initialize multi-item MDP.
+        
+        Args:
+            items: List of item configs with keys: id, shelf_life, name, demand_multiplier
+            suppliers: List of supplier configs with keys: id, lead_time, unit_cost, items_supplied
+            demand_process: Base demand process (will be scaled by item multipliers)
+            cost_params: Cost parameters (shelf_life should match max item shelf_life)
+            stochastic_lead_times: Optional stochastic lead times per supplier
+            lost_sales: Whether to use lost sales (vs backorders) model
+        """
+        from .state import create_multi_item_state, MultiItemInventoryState
+        
+        self.items = items
+        self.suppliers = suppliers
+        self.demand_process = demand_process
+        self.cost_params = cost_params
+        self.stochastic_lead_times = stochastic_lead_times or {}
+        self.lost_sales = lost_sales
+        
+        # Build item and supplier lookups
+        self.item_lookup = {item['id']: item for item in items}
+        self.supplier_lookup = {s['id']: s for s in suppliers}
+        
+        # Max shelf life for state creation
+        self.max_shelf_life = max(item['shelf_life'] for item in items)
+    
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None
+    ) -> 'MultiItemInventoryState':
+        """Reset the environment to an initial state."""
+        from .state import create_multi_item_state
+        
+        if seed is not None:
+            np.random.seed(seed)
+        
+        options = options or {}
+        
+        return create_multi_item_state(
+            items=self.items,
+            suppliers=self.suppliers,
+            initial_inventory=options.get('initial_inventory'),
+            initial_crisis=options.get('initial_crisis', 0)
+        )
+    
+    def get_feasible_actions(self, state: 'MultiItemInventoryState') -> List[Dict[Tuple[int, int], float]]:
+        """
+        Get all feasible actions from a state.
+        
+        Returns list of action dicts mapping (item_id, supplier_id) -> quantity.
+        """
+        # For simplicity, return a single empty action
+        # Full enumeration would be combinatorially explosive
+        return [{}]
+    
+    def is_action_feasible(self, state: 'MultiItemInventoryState', action: Dict[Tuple[int, int], float]) -> bool:
+        """Check if an action is feasible."""
+        for (item_id, supplier_id), qty in action.items():
+            if qty < 0:
+                return False
+            if item_id not in self.item_lookup:
+                return False
+            if supplier_id not in self.supplier_lookup:
+                return False
+            # Check supplier covers this item
+            supplier = self.supplier_lookup[supplier_id]
+            items_supplied = supplier.get('items_supplied')
+            if items_supplied is not None and item_id not in items_supplied:
+                return False
+            # Check capacity
+            if qty > supplier.get('capacity', float('inf')):
+                return False
+        return True
+    
+    def step(
+        self,
+        state: 'MultiItemInventoryState',
+        action: Dict[Tuple[int, int], float],
+        demand: Optional[Dict[int, float]] = None
+    ) -> TransitionResult:
+        """
+        Execute one step of the multi-item MDP.
+        
+        Sequence of events (per item):
+        1. Arrivals
+        2. Serve demand (FIFO)
+        3. Calculate costs
+        4. Aging and spoilage
+        5. Pipeline shifts and new orders
+        6. Backorder update
+        
+        Args:
+            state: Current MultiItemInventoryState
+            action: Order action {(item_id, supplier_id): quantity}
+            demand: Optional fixed demand per item
+        
+        Returns:
+            TransitionResult with aggregated costs
+        """
+        from .state import MultiItemInventoryState
+        
+        # Create copy to avoid mutation
+        next_state = state.copy()
+        
+        # Sample or use provided demand per item
+        if demand is None:
+            demand = {}
+            base_demand = self.demand_process.sample(state.exogenous_state)
+            for item_id, item_config in next_state.items.items():
+                multiplier = item_config.demand_multiplier
+                demand[item_id] = base_demand * multiplier
+        
+        total_costs = PeriodCosts()
+        total_arrivals = 0.0
+        total_sales = 0.0
+        total_demand = 0.0
+        total_spoiled = 0.0
+        total_backorders = 0.0
+        
+        # Process each item
+        for item_id in next_state.items:
+            item_demand = demand.get(item_id, 0)
+            total_demand += item_demand
+            
+            # ========== 1. ARRIVALS ==========
+            arrivals = 0.0
+            for (iid, sid), pipeline in next_state.pipelines.items():
+                if iid == item_id:
+                    arrivals += pipeline.get_arriving()
+            next_state.add_arrivals(item_id, arrivals)
+            total_arrivals += arrivals
+            
+            # ========== 2. SERVE DEMAND (FIFO) ==========
+            total_item_demand = item_demand
+            if not self.lost_sales:
+                total_item_demand += next_state.backorders.get(item_id, 0)
+            
+            sales, new_backorders = next_state.serve_demand_fifo(item_id, total_item_demand)
+            total_sales += sales
+            total_backorders += new_backorders
+            
+            # Snapshot inventory for holding cost
+            inventory_snapshot = next_state.inventory[item_id].copy()
+            
+            # ========== 3. CALCULATE COSTS (per item) ==========
+            item_shelf_life = next_state.items[item_id].shelf_life
+            
+            # Holding cost
+            holding_costs = self.cost_params.holding_costs[:item_shelf_life]
+            if len(holding_costs) < item_shelf_life:
+                # Pad if cost_params has fewer buckets
+                holding_costs = list(holding_costs) + [holding_costs[-1]] * (item_shelf_life - len(holding_costs))
+            total_costs.holding_cost += calculate_holding_cost(inventory_snapshot, holding_costs)
+            
+            # Shortage cost
+            total_costs.shortage_cost += calculate_shortage_cost(
+                new_backorders, self.cost_params.shortage_cost
+            )
+            
+            # ========== 4. AGING AND SPOILAGE ==========
+            spoiled = next_state.age_inventory(item_id)
+            total_spoiled += spoiled
+            total_costs.spoilage_cost += calculate_spoilage_cost(
+                spoiled, self.cost_params.spoilage_cost
+            )
+            
+            # ========== 6. BACKORDER UPDATE ==========
+            if self.lost_sales:
+                next_state.backorders[item_id] = 0.0
+            else:
+                next_state.backorders[item_id] = new_backorders
+        
+        # ========== 5. PIPELINE SHIFTS AND NEW ORDERS ==========
+        for (item_id, supplier_id), pipeline in next_state.pipelines.items():
+            order_qty = action.get((item_id, supplier_id), 0.0)
+            
+            # Purchase costs (only add once per order)
+            if order_qty > 0:
+                total_costs.purchase_cost += order_qty * pipeline.unit_cost
+                if pipeline.fixed_cost > 0:
+                    total_costs.fixed_order_cost += pipeline.fixed_cost
+            
+            # Pipeline shift
+            pipeline.shift_and_add_order(order_qty)
+            pipeline.shift_scheduled()
+        
+        # Update time step
+        next_state.time_step = state.time_step + 1
+        
+        # Update exogenous state
+        next_state.exogenous_state = self.demand_process.update_exogenous_state(
+            state.exogenous_state
+        )
+        
+        return TransitionResult(
+            next_state=next_state,
+            costs=total_costs,
+            demand_realized=total_demand,
+            sales=total_sales,
+            new_backorders=total_backorders,
+            spoiled=total_spoiled,
+            arrivals=total_arrivals,
+            info={
+                "num_items": len(next_state.items),
+                "per_item_demand": demand
+            }
+        )
+
+
+def create_multi_item_mdp(
+    items: Optional[List[Dict]] = None,
+    suppliers: Optional[List[Dict]] = None,
+    mean_demand: float = 10.0,
+    demand_type: str = "stationary"
+) -> MultiItemPerishableInventoryMDP:
+    """
+    Factory function to create a multi-item MDP.
+    
+    Args:
+        items: List of item configs. If None, creates 2 default items.
+        suppliers: List of supplier configs. If None, creates 2 default suppliers.
+        mean_demand: Base mean demand (scaled by item multipliers)
+        demand_type: Type of demand process
+    
+    Returns:
+        Configured MultiItemPerishableInventoryMDP
+    """
+    if items is None:
+        items = [
+            {'id': 0, 'shelf_life': 5, 'name': 'Item A', 'demand_multiplier': 1.0},
+            {'id': 1, 'shelf_life': 4, 'name': 'Item B', 'demand_multiplier': 0.8}
+        ]
+    
+    if suppliers is None:
+        suppliers = [
+            {'id': 0, 'lead_time': 1, 'unit_cost': 2.0, 'capacity': 100, 'moq': 1},
+            {'id': 1, 'lead_time': 3, 'unit_cost': 1.0, 'capacity': 100, 'moq': 1}
+        ]
+    
+    # Create demand process
+    demand_process = PoissonDemand(mean_demand)
+    
+    # Use max shelf life for cost parameters
+    max_shelf_life = max(item['shelf_life'] for item in items)
+    cost_params = CostParameters.age_dependent_holding(
+        shelf_life=max_shelf_life,
+        base_holding=0.5,
+        age_premium=0.5,
+        shortage_cost=10.0,
+        spoilage_cost=5.0
+    )
+    
+    return MultiItemPerishableInventoryMDP(
+        items=items,
+        suppliers=suppliers,
+        demand_process=demand_process,
+        cost_params=cost_params
+    )
