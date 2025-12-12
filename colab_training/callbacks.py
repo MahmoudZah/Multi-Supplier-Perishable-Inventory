@@ -7,6 +7,7 @@ Implements:
 3. BenchmarkCallback: Periodic RL vs TBS comparison
 """
 
+import sys
 import numpy as np
 from typing import Dict, List, Optional, Callable, Any, Union
 from collections import deque
@@ -99,7 +100,8 @@ class ScheduleCallback(BaseCallback):
             self.logger.record("schedule/progress", 1.0 - progress)
             
             if self.verbose > 0:
-                print(f"Step {self.num_timesteps}: LR={current_lr:.2e}, Ent={current_ent:.4f}")
+                sys.stderr.write(f"Step {self.num_timesteps}: LR={current_lr:.2e}, Ent={current_ent:.4f}\n")
+                sys.stderr.flush()
         
         return True
 
@@ -172,7 +174,8 @@ class CurriculumCallback(BaseCallback):
                 self.episodes_at_level += 1
                 
                 if self.verbose > 1:
-                    print(f"Episode reward: {ep_reward:.2f}")
+                    sys.stderr.write(f"Episode reward: {ep_reward:.2f}\n")
+                    sys.stderr.flush()
         
         # Check if we should advance
         if self._should_advance():
@@ -214,10 +217,11 @@ class CurriculumCallback(BaseCallback):
         new_level = self.current_complexity
         
         if self.verbose > 0:
-            print(f"\n{'='*50}")
-            print(f"CURRICULUM: Advancing {old_level} -> {new_level}")
-            print(f"Mean reward: {np.mean(self.episode_rewards):.2f}")
-            print(f"{'='*50}\n")
+            sys.stderr.write(f"\n{'='*50}\n")
+            sys.stderr.write(f"CURRICULUM: Advancing {old_level} -> {new_level}\n")
+            sys.stderr.write(f"Mean reward: {np.mean(self.episode_rewards):.2f}\n")
+            sys.stderr.write(f"{'='*50}\n\n")
+            sys.stderr.flush()
         
         # Log to tensorboard
         self.logger.record("curriculum/level", self.current_level_idx)
@@ -248,12 +252,17 @@ class CurriculumCallback(BaseCallback):
         
         # CRITICAL: Reset the environment and update model's internal observation
         # This prevents the "No previous observation was provided" assertion error
-        self.model._last_obs = new_env.reset()
+        obs = new_env.reset()
+        # Handle both old Gym API (obs) and new Gymnasium API (obs, info)
+        if isinstance(obs, tuple):
+            obs = obs[0]
+        self.model._last_obs = obs
         # Also need to reset these internal buffers for on-policy algorithms
         self.model._last_episode_starts = np.ones((new_env.num_envs,), dtype=bool)
         
         if self.verbose > 0:
-            print(f"Curriculum: Set environment to {complexity}")
+            sys.stderr.write(f"Curriculum: Set environment to {complexity}\n")
+            sys.stderr.flush()
 
 
 class BenchmarkCallback(BaseCallback):
@@ -298,46 +307,55 @@ class BenchmarkCallback(BaseCallback):
     
     def _run_benchmark(self) -> None:
         """Execute full benchmark comparison."""
-        if self.verbose > 0:
-            print(f"\nRunning benchmark at step {self.num_timesteps}...")
-        
-        results = {
-            "timestep": self.num_timesteps,
-            "policies": {}
-        }
-        
-        # Evaluate RL agent
-        rl_metrics = self._evaluate_policy(self.model, "RL")
-        results["policies"]["RL"] = rl_metrics
-        
-        # Log RL metrics
-        self.logger.record("benchmark/rl_mean_cost", rl_metrics["mean_cost"])
-        self.logger.record("benchmark/rl_fill_rate", rl_metrics["fill_rate"])
-        
-        # Evaluate baselines
-        for name, policy in self.baseline_policies.items():
-            baseline_metrics = self._evaluate_policy(policy, name)
-            results["policies"][name] = baseline_metrics
+        # Use simple logging to avoid Rich console recursion in Jupyter/Colab
+        try:
+            if self.verbose > 0:
+                # Write directly to stderr to avoid Rich console capture issues
+                sys.stderr.write(f"\nRunning benchmark at step {self.num_timesteps}...\n")
+                sys.stderr.flush()
             
-            self.logger.record(f"benchmark/{name.lower()}_mean_cost", baseline_metrics["mean_cost"])
-            self.logger.record(f"benchmark/{name.lower()}_fill_rate", baseline_metrics["fill_rate"])
+            results = {
+                "timestep": self.num_timesteps,
+                "policies": {}
+            }
+            
+            # Evaluate RL agent
+            rl_metrics = self._evaluate_policy(self.model, "RL")
+            results["policies"]["RL"] = rl_metrics
+            
+            # Log RL metrics
+            self.logger.record("benchmark/rl_mean_cost", rl_metrics["mean_cost"])
+            self.logger.record("benchmark/rl_fill_rate", rl_metrics["fill_rate"])
+            
+            # Evaluate baselines
+            for name, policy in self.baseline_policies.items():
+                baseline_metrics = self._evaluate_policy(policy, name)
+                results["policies"][name] = baseline_metrics
+                
+                self.logger.record(f"benchmark/{name.lower()}_mean_cost", baseline_metrics["mean_cost"])
+                self.logger.record(f"benchmark/{name.lower()}_fill_rate", baseline_metrics["fill_rate"])
+            
+            # Compute relative performance
+            if "TBS" in self.baseline_policies:
+                tbs_cost = results["policies"]["TBS"]["mean_cost"]
+                rl_cost = rl_metrics["mean_cost"]
+                if tbs_cost > 0:
+                    cost_ratio = rl_cost / tbs_cost
+                    results["rl_vs_tbs_ratio"] = cost_ratio
+                    self.logger.record("benchmark/rl_vs_tbs_ratio", cost_ratio)
+            
+            self.benchmark_results.append(results)
+            
+            if self.verbose > 0:
+                sys.stderr.write(f"  RL: cost={rl_metrics['mean_cost']:.2f}, fill={rl_metrics['fill_rate']:.2%}\n")
+                for name, metrics in results["policies"].items():
+                    if name != "RL":
+                        sys.stderr.write(f"  {name}: cost={metrics['mean_cost']:.2f}, fill={metrics['fill_rate']:.2%}\n")
+                sys.stderr.flush()
         
-        # Compute relative performance
-        if "TBS" in self.baseline_policies:
-            tbs_cost = results["policies"]["TBS"]["mean_cost"]
-            rl_cost = rl_metrics["mean_cost"]
-            if tbs_cost > 0:
-                cost_ratio = rl_cost / tbs_cost
-                results["rl_vs_tbs_ratio"] = cost_ratio
-                self.logger.record("benchmark/rl_vs_tbs_ratio", cost_ratio)
-        
-        self.benchmark_results.append(results)
-        
-        if self.verbose > 0:
-            print(f"  RL: cost={rl_metrics['mean_cost']:.2f}, fill={rl_metrics['fill_rate']:.2%}")
-            for name, metrics in results["policies"].items():
-                if name != "RL":
-                    print(f"  {name}: cost={metrics['mean_cost']:.2f}, fill={metrics['fill_rate']:.2%}")
+        except Exception as e:
+            # Silently log error to avoid cascading issues
+            self.logger.record("benchmark/error", str(e))
     
     def _evaluate_policy(
         self,
@@ -354,6 +372,9 @@ class BenchmarkCallback(BaseCallback):
         
         for _ in range(self.n_eval_episodes):
             obs = self.eval_env.reset()
+            # Handle both old Gym API (obs) and new Gymnasium API (obs, info)
+            if isinstance(obs, tuple):
+                obs = obs[0]
             episode_cost = 0.0
             episode_demand = 0.0
             episode_sales = 0.0
@@ -378,7 +399,13 @@ class BenchmarkCallback(BaseCallback):
                     else:
                         action = self.eval_env.action_space.sample()
                 
-                obs, reward, done, info = self.eval_env.step(action)
+                result = self.eval_env.step(action)
+                # Handle both old Gym API (4 values) and new Gymnasium API (5 values)
+                if len(result) == 5:
+                    obs, reward, terminated, truncated, info = result
+                    done = terminated or truncated
+                else:
+                    obs, reward, done, info = result
                 
                 if isinstance(info, list) and len(info) > 0:
                     info = info[0]
