@@ -18,9 +18,17 @@ from pathlib import Path
 from perishable_inventory_mdp.policies import (
     TailoredBaseSurgePolicy,
     BaseStockPolicy,
-    DoNothingPolicy
+    DoNothingPolicy,
+    ProjectedInventoryLevelPolicy,
+    DualIndexPolicy,
+    ProjectedEffectiveInventoryPolicy,
+    VectorBaseStockPolicy
 )
 from perishable_inventory_mdp.state import InventoryState
+
+
+# Available baseline policies for comparison
+AVAILABLE_BASELINES = ["TBS", "BaseStock", "DoNothing", "PIL", "DIP", "PEIP", "VectorBS"]
 
 
 @dataclass
@@ -352,6 +360,220 @@ def get_basestock_policy_for_env(env: Any, target_level: float = 60.0) -> BaseSt
     return BaseStockPolicy(target_level=target_level, supplier_id=supplier_id)
 
 
+def get_pil_policy_for_env(env: Any, target_level: float = 60.0) -> ProjectedInventoryLevelPolicy:
+    """Create PIL policy for the environment.
+    
+    Args:
+        env: Environment
+        target_level: Target inventory level
+    
+    Returns:
+        Configured ProjectedInventoryLevelPolicy
+    """
+    if hasattr(env, 'mdp'):
+        mdp = env.mdp
+    elif hasattr(env, 'envs') and len(env.envs) > 0:
+        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
+    else:
+        mdp = env
+    
+    suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
+    if suppliers:
+        sorted_suppliers = sorted(suppliers, key=lambda s: s.get('unit_cost', 1.0))
+        supplier_id = sorted_suppliers[0]['id']
+        lead_time = sorted_suppliers[0].get('lead_time', 2)
+    else:
+        supplier_id = 0
+        lead_time = 2
+    
+    demand_process = mdp.demand_process if hasattr(mdp, 'demand_process') else None
+    if demand_process and hasattr(demand_process, 'base_rate'):
+        mean_demand = demand_process.base_rate
+    elif demand_process and hasattr(demand_process, 'mean_demand'):
+        mean_demand = demand_process.mean_demand
+    else:
+        mean_demand = 10.0
+    
+    return ProjectedInventoryLevelPolicy(
+        target_level=target_level,
+        lead_time=lead_time,
+        mean_demand=mean_demand,
+        supplier_id=supplier_id
+    )
+
+
+def get_dip_policy_for_env(env: Any) -> DualIndexPolicy:
+    """Create DIP (Dual-Index Policy) for the environment.
+    
+    Args:
+        env: Environment with at least 2 suppliers
+    
+    Returns:
+        Configured DualIndexPolicy
+    """
+    if hasattr(env, 'mdp'):
+        mdp = env.mdp
+    elif hasattr(env, 'envs') and len(env.envs) > 0:
+        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
+    else:
+        mdp = env
+    
+    suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
+    if len(suppliers) < 2:
+        raise ValueError("DIP requires at least 2 suppliers")
+    
+    sorted_suppliers = sorted(suppliers, key=lambda s: s.get('unit_cost', 1.0))
+    slow_supplier = sorted_suppliers[0]
+    fast_supplier = sorted_suppliers[-1]
+    
+    demand_process = mdp.demand_process if hasattr(mdp, 'demand_process') else None
+    if demand_process and hasattr(demand_process, 'base_rate'):
+        mean_demand = demand_process.base_rate
+    elif demand_process and hasattr(demand_process, 'mean_demand'):
+        mean_demand = demand_process.mean_demand
+    else:
+        mean_demand = 10.0
+    std_demand = np.sqrt(mean_demand)
+    
+    return DualIndexPolicy.from_demand_forecast(
+        slow_supplier_id=slow_supplier['id'],
+        fast_supplier_id=fast_supplier['id'],
+        mean_demand=mean_demand,
+        std_demand=std_demand,
+        slow_lead_time=slow_supplier.get('lead_time', 3),
+        fast_lead_time=fast_supplier.get('lead_time', 1)
+    )
+
+
+def get_peip_policy_for_env(env: Any) -> ProjectedEffectiveInventoryPolicy:
+    """Create PEIP (Projected Effective Inventory Position) for the environment.
+    
+    Args:
+        env: Environment with at least 2 suppliers
+    
+    Returns:
+        Configured ProjectedEffectiveInventoryPolicy
+    """
+    if hasattr(env, 'mdp'):
+        mdp = env.mdp
+    elif hasattr(env, 'envs') and len(env.envs) > 0:
+        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
+    else:
+        mdp = env
+    
+    suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
+    if len(suppliers) < 2:
+        raise ValueError("PEIP requires at least 2 suppliers")
+    
+    sorted_suppliers = sorted(suppliers, key=lambda s: s.get('unit_cost', 1.0))
+    slow_supplier = sorted_suppliers[0]
+    fast_supplier = sorted_suppliers[-1]
+    
+    demand_process = mdp.demand_process if hasattr(mdp, 'demand_process') else None
+    if demand_process and hasattr(demand_process, 'base_rate'):
+        mean_demand = demand_process.base_rate
+    elif demand_process and hasattr(demand_process, 'mean_demand'):
+        mean_demand = demand_process.mean_demand
+    else:
+        mean_demand = 10.0
+    std_demand = np.sqrt(mean_demand)
+    
+    return ProjectedEffectiveInventoryPolicy.from_demand_and_leadtimes(
+        slow_supplier_id=slow_supplier['id'],
+        fast_supplier_id=fast_supplier['id'],
+        mean_demand=mean_demand,
+        std_demand=std_demand,
+        slow_lead_time=slow_supplier.get('lead_time', 3),
+        fast_lead_time=fast_supplier.get('lead_time', 1)
+    )
+
+
+def get_vector_bs_policy_for_env(env: Any) -> VectorBaseStockPolicy:
+    """Create VectorBaseStock policy for the environment.
+    
+    Args:
+        env: Environment
+    
+    Returns:
+        Configured VectorBaseStockPolicy
+    """
+    if hasattr(env, 'mdp'):
+        mdp = env.mdp
+    elif hasattr(env, 'envs') and len(env.envs) > 0:
+        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
+    else:
+        mdp = env
+    
+    suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
+    shelf_life = mdp.shelf_life if hasattr(mdp, 'shelf_life') else 5
+    
+    demand_process = mdp.demand_process if hasattr(mdp, 'demand_process') else None
+    if demand_process and hasattr(demand_process, 'base_rate'):
+        mean_demand = demand_process.base_rate
+    elif demand_process and hasattr(demand_process, 'mean_demand'):
+        mean_demand = demand_process.mean_demand
+    else:
+        mean_demand = 10.0
+    std_demand = np.sqrt(mean_demand)
+    
+    if suppliers:
+        return VectorBaseStockPolicy.from_demand_forecast(
+            suppliers=suppliers,
+            mean_demand=mean_demand,
+            std_demand=std_demand,
+            shelf_life=shelf_life
+        )
+    else:
+        return VectorBaseStockPolicy(default_target=60.0)
+
+
+def get_all_policies_for_env(env: Any) -> Dict[str, Any]:
+    """Get all available baseline policies for an environment.
+    
+    Args:
+        env: Environment
+    
+    Returns:
+        Dictionary mapping policy name to policy instance
+    """
+    policies = {}
+    
+    # Always available
+    policies["DoNothing"] = DoNothingPolicy()
+    
+    try:
+        policies["TBS"] = get_tbs_policy_for_env(env)
+    except (ValueError, AttributeError):
+        pass
+    
+    try:
+        policies["BaseStock"] = get_basestock_policy_for_env(env)
+    except (ValueError, AttributeError):
+        pass
+    
+    try:
+        policies["PIL"] = get_pil_policy_for_env(env)
+    except (ValueError, AttributeError):
+        pass
+    
+    try:
+        policies["DIP"] = get_dip_policy_for_env(env)
+    except (ValueError, AttributeError):
+        pass
+    
+    try:
+        policies["PEIP"] = get_peip_policy_for_env(env)
+    except (ValueError, AttributeError):
+        pass
+    
+    try:
+        policies["VectorBS"] = get_vector_bs_policy_for_env(env)
+    except (ValueError, AttributeError):
+        pass
+    
+    return policies
+
+
 def compare_policies(
     rl_model: Any,
     env_configs: List[Any],
@@ -432,6 +654,66 @@ def compare_policies(
                 complexity=complexity
             )
             report.add_result(dn_result)
+        
+        if "PIL" in include_baselines:
+            try:
+                pil_policy = get_pil_policy_for_env(env)
+                pil_result = evaluate_policy(
+                    policy=pil_policy,
+                    env=env,
+                    n_episodes=n_episodes,
+                    policy_name="PIL",
+                    env_id=env_id,
+                    complexity=complexity
+                )
+                report.add_result(pil_result)
+            except (ValueError, AttributeError) as e:
+                print(f"Skipping PIL for {env_id}: {e}")
+        
+        if "DIP" in include_baselines:
+            try:
+                dip_policy = get_dip_policy_for_env(env)
+                dip_result = evaluate_policy(
+                    policy=dip_policy,
+                    env=env,
+                    n_episodes=n_episodes,
+                    policy_name="DIP",
+                    env_id=env_id,
+                    complexity=complexity
+                )
+                report.add_result(dip_result)
+            except (ValueError, AttributeError) as e:
+                print(f"Skipping DIP for {env_id}: {e}")
+        
+        if "PEIP" in include_baselines:
+            try:
+                peip_policy = get_peip_policy_for_env(env)
+                peip_result = evaluate_policy(
+                    policy=peip_policy,
+                    env=env,
+                    n_episodes=n_episodes,
+                    policy_name="PEIP",
+                    env_id=env_id,
+                    complexity=complexity
+                )
+                report.add_result(peip_result)
+            except (ValueError, AttributeError) as e:
+                print(f"Skipping PEIP for {env_id}: {e}")
+        
+        if "VectorBS" in include_baselines:
+            try:
+                vbs_policy = get_vector_bs_policy_for_env(env)
+                vbs_result = evaluate_policy(
+                    policy=vbs_policy,
+                    env=env,
+                    n_episodes=n_episodes,
+                    policy_name="VectorBS",
+                    env_id=env_id,
+                    complexity=complexity
+                )
+                report.add_result(vbs_result)
+            except (ValueError, AttributeError) as e:
+                print(f"Skipping VectorBS for {env_id}: {e}")
         
         env.close() if hasattr(env, 'close') else None
     
