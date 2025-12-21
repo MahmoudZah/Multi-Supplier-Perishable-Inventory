@@ -27,6 +27,26 @@ from perishable_inventory_mdp.policies import (
 from perishable_inventory_mdp.state import InventoryState
 
 
+def _get_mdp_from_env(env: Any) -> Any:
+    """Robustly extract MDP from potentially wrapped environment."""
+    if hasattr(env, 'mdp'):
+        return env.mdp
+    
+    # Try unwrapping
+    if hasattr(env, 'unwrapped'):
+        if hasattr(env.unwrapped, 'mdp'):
+            return env.unwrapped.mdp
+        if hasattr(env.unwrapped, 'suppliers'): # It IS the MDP
+            return env.unwrapped
+            
+    # Check vectorized envs
+    if hasattr(env, 'envs') and len(env.envs) > 0:
+        return _get_mdp_from_env(env.envs[0])
+        
+    return env
+
+
+
 # Available baseline policies for comparison
 AVAILABLE_BASELINES = ["TBS", "BaseStock", "DoNothing", "PIL", "DIP", "PEIP", "VectorBS"]
 
@@ -288,18 +308,14 @@ def get_tbs_policy_for_env(env: Any) -> TailoredBaseSurgePolicy:
     Returns:
         Configured TailoredBaseSurgePolicy
     """
-    # Extract underlying MDP
-    if hasattr(env, 'mdp'):
-        mdp = env.mdp
-    elif hasattr(env, 'envs') and len(env.envs) > 0:
-        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
-    else:
-        mdp = env
+    mdp = _get_mdp_from_env(env)
     
     # Get supplier info
     suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
     if len(suppliers) < 2:
-        raise ValueError("TBS requires at least 2 suppliers")
+        # Fallback to BaseStock for single supplier
+        # print("Note: Environment has fewer than 2 suppliers. Falling back to BaseStock policy.")
+        return get_basestock_policy_for_env(env)
     
     # Identify slow (cheap) and fast (expensive) suppliers
     sorted_suppliers = sorted(suppliers, key=lambda s: s.get('unit_cost', 1.0))
@@ -342,13 +358,7 @@ def get_basestock_policy_for_env(env: Any, target_level: float = 60.0) -> BaseSt
     Returns:
         Configured BaseStockPolicy
     """
-    # Use primary (cheapest) supplier
-    if hasattr(env, 'mdp'):
-        mdp = env.mdp
-    elif hasattr(env, 'envs') and len(env.envs) > 0:
-        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
-    else:
-        mdp = env
+    mdp = _get_mdp_from_env(env)
     
     suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
     if suppliers:
@@ -370,12 +380,7 @@ def get_pil_policy_for_env(env: Any, target_level: float = 60.0) -> ProjectedInv
     Returns:
         Configured ProjectedInventoryLevelPolicy
     """
-    if hasattr(env, 'mdp'):
-        mdp = env.mdp
-    elif hasattr(env, 'envs') and len(env.envs) > 0:
-        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
-    else:
-        mdp = env
+    mdp = _get_mdp_from_env(env)
     
     suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
     if suppliers:
@@ -411,16 +416,12 @@ def get_dip_policy_for_env(env: Any) -> DualIndexPolicy:
     Returns:
         Configured DualIndexPolicy
     """
-    if hasattr(env, 'mdp'):
-        mdp = env.mdp
-    elif hasattr(env, 'envs') and len(env.envs) > 0:
-        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
-    else:
-        mdp = env
+    mdp = _get_mdp_from_env(env)
     
     suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
     if len(suppliers) < 2:
-        raise ValueError("DIP requires at least 2 suppliers")
+        # Fallback to BaseStock for single supplier
+        return get_basestock_policy_for_env(env)
     
     sorted_suppliers = sorted(suppliers, key=lambda s: s.get('unit_cost', 1.0))
     slow_supplier = sorted_suppliers[0]
@@ -454,16 +455,12 @@ def get_peip_policy_for_env(env: Any) -> ProjectedEffectiveInventoryPolicy:
     Returns:
         Configured ProjectedEffectiveInventoryPolicy
     """
-    if hasattr(env, 'mdp'):
-        mdp = env.mdp
-    elif hasattr(env, 'envs') and len(env.envs) > 0:
-        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
-    else:
-        mdp = env
+    mdp = _get_mdp_from_env(env)
     
     suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
     if len(suppliers) < 2:
-        raise ValueError("PEIP requires at least 2 suppliers")
+        # Fallback to PIL for single supplier
+        return get_pil_policy_for_env(env)
     
     sorted_suppliers = sorted(suppliers, key=lambda s: s.get('unit_cost', 1.0))
     slow_supplier = sorted_suppliers[0]
@@ -497,12 +494,7 @@ def get_vector_bs_policy_for_env(env: Any) -> VectorBaseStockPolicy:
     Returns:
         Configured VectorBaseStockPolicy
     """
-    if hasattr(env, 'mdp'):
-        mdp = env.mdp
-    elif hasattr(env, 'envs') and len(env.envs) > 0:
-        mdp = env.envs[0].mdp if hasattr(env.envs[0], 'mdp') else env.envs[0]
-    else:
-        mdp = env
+    mdp = _get_mdp_from_env(env)
     
     suppliers = mdp.suppliers if hasattr(mdp, 'suppliers') else []
     shelf_life = mdp.shelf_life if hasattr(mdp, 'shelf_life') else 5

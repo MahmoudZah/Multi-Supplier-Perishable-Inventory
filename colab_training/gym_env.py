@@ -305,6 +305,7 @@ class PerishableInventoryGymWrapper(gym.Env):
         info = {
             "demand": result.demand_realized,
             "sales": result.sales,
+            "arrivals": result.arrivals,
             "spoilage": result.spoiled,
             "total_cost": result.costs.total_cost,
             "raw_reward": result.reward,
@@ -314,7 +315,9 @@ class PerishableInventoryGymWrapper(gym.Env):
             "spoilage_cost": result.costs.spoilage_cost,
             "fill_rate": result.sales / max(result.demand_realized, 1e-6),
             "orders": mdp_action,
-            "time_step": self.current_time
+            "time_step": self.current_time,
+            "inventory": result.next_state.total_inventory,
+            "inventory_position": result.next_state.inventory_position
         }
         
         return obs, reward, terminated, truncated, info

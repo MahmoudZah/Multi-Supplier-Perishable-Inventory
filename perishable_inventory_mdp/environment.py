@@ -353,7 +353,8 @@ class PerishableInventoryMDP(InventoryEnvironment):
             arrivals=arrivals,
             info={
                 "inventory_position": next_state.inventory_position,
-                "total_inventory": next_state.total_inventory
+                "total_inventory": next_state.total_inventory,
+                "inventory": next_state.total_inventory
             }
         )
     
